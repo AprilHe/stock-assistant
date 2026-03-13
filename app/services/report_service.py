@@ -51,6 +51,47 @@ def _safe_profile_id(profile_id: str) -> str:
     return "".join(ch for ch in profile_id if ch.isalnum() or ch in {"-", "_", "."}) or "default"
 
 
+def _bounded_section_text(
+    text: str,
+    *,
+    language: str = "en",
+    min_chars: int = 30,
+    max_chars: int = 60,
+    filler: str | None = None,
+) -> str:
+    cleaned = " ".join((text or "").split())
+    fallback = filler or (
+        "继续等待更清晰确认，避免在噪音阶段强行交易。"
+        if language == "zh"
+        else "Wait for cleaner confirmation and avoid forcing trades in noisy conditions."
+    )
+
+    if not cleaned:
+        cleaned = fallback
+
+    def _trim(raw: str) -> str:
+        if len(raw) <= max_chars:
+            return raw
+        chunk = raw[:max_chars]
+        for marker in ("。", "！", "？", "，", ".", "!", "?", ",", ";", " "):
+            pos = chunk.rfind(marker)
+            if pos >= max_chars - 16:
+                candidate = chunk[: pos + 1].strip()
+                if candidate:
+                    return candidate
+        return chunk.strip()
+
+    cleaned = _trim(cleaned)
+    if len(cleaned) >= min_chars:
+        return cleaned
+
+    needed = min_chars - len(cleaned)
+    spacer = "" if (not cleaned or cleaned.endswith(("。", ".", "!", "！", "?", "？"))) else " "
+    extra = fallback[:needed].strip()
+    padded = f"{cleaned}{spacer}{extra}".strip()
+    return _trim(padded)
+
+
 def _report_id() -> str:
     # Include microseconds to avoid filename collisions in concurrent runs.
     return datetime.now(dt_tz.utc).strftime("%Y%m%dT%H%M%S%fZ")
@@ -69,6 +110,19 @@ def _watchlist_brief_message(
     schedule: str = "daily",
     language: str = "en",
 ) -> str:
+    def _signal_from_score(score: int) -> tuple[str, str]:
+        if language == "zh":
+            if score >= 65:
+                return "🟢", "买入"
+            if score >= 45:
+                return "⚪", "观望"
+            return "🔴", "减仓"
+        if score >= 65:
+            return "🟢", "Buy"
+        if score >= 45:
+            return "⚪", "Hold"
+        return "🔴", "Reduce"
+
     candidates = []
     for strategy in strategies or ["breakout"]:
         for asset_type in _strategy_asset_types(strategy):
@@ -89,74 +143,64 @@ def _watchlist_brief_message(
     candidates.sort(key=lambda candidate: (candidate.score, candidate.confidence), reverse=True)
     top_n = 5 if detail_level == "detailed" else 3
     top = candidates[:top_n]
+    date_str = datetime.now(dt_tz.utc).strftime("%Y-%m-%d")
+
     if not top:
-        compact = ""
-        try:
-            summary = build_watchlist_summary_response(
-                watchlist=watchlist,
-                schedule=schedule,
-                language=language,
-            ).summary
-            compact = " ".join(summary.strip().split())[:220]
-        except Exception:
-            compact = ""
         if language == "zh":
-            lines = ["📋 自选股复盘", "市场总结: 结构偏震荡，优先等待高把握信号。", "风险总结: 当前信号不足，避免追涨。"]
-            if compact:
-                lines.append(f"简要背景: {compact}")
+            lines = [
+                f"{date_str} 决策简报",
+                f"> {len(watchlist)}只 | 🟢0 ⚪0 🔴0",
+                "",
+                "当前无高质量入场信号，建议继续观察，避免勉强交易。",
+            ]
             return "\n".join(lines)
         lines = [
-            "📋 Watchlist Recap",
-            "Market message: tape is mixed, so wait for cleaner confirmation.",
-            "Risk message: setup quality is thin; avoid forced entries.",
+            f"{date_str} Decision Brief",
+            f"> {len(watchlist)} symbols | 🟢0 ⚪0 🔴0",
+            "",
+            "No high-conviction setups right now. Stay selective and avoid forced entries.",
         ]
-        if compact:
-            lines.append(f"Context: {compact}")
         return "\n".join(lines)
 
-    avg_score = sum(candidate.score for candidate in top) / len(top)
-    risk_flags = [
-        risk
-        for candidate in top
-        for risk in (candidate.risk_flags or [])
-    ]
-    risk_preview = risk_flags[0] if risk_flags else ("波动风险可控" if language == "zh" else "volatility risk is manageable")
+    counts = {"buy": 0, "hold": 0, "reduce": 0}
+    for candidate in top:
+        if candidate.score >= 65:
+            counts["buy"] += 1
+        elif candidate.score >= 45:
+            counts["hold"] += 1
+        else:
+            counts["reduce"] += 1
 
     if language == "zh":
         lines = [
-            "📋 自选股复盘",
-            f"市场总结: 共发现 {len(top)} 个候选，平均评分 {avg_score:.1f}，结构偏机会驱动。",
-            f"风险总结: 主要风险为 {risk_preview}。",
+            f"{date_str} 决策简报",
+            f"> {len(top)}只 | 🟢{counts['buy']} ⚪{counts['hold']} 🔴{counts['reduce']}",
+            "",
         ]
-        if detail_level == "detailed":
-            lines.extend(["1. Setup Summary", f"共扫描 {len(watchlist)} 个标的，筛出 {len(top)} 个高分机会。", "", "2. Top Setups"])
     else:
         lines = [
-            "📋 Watchlist Recap",
-            f"Market message: found {len(top)} actionable setups with avg score {avg_score:.1f}.",
-            f"Risk message: primary risk is {risk_preview}.",
+            f"{date_str} Decision Brief",
+            f"> {len(top)} symbols | 🟢{counts['buy']} ⚪{counts['hold']} 🔴{counts['reduce']}",
+            "",
         ]
-        if detail_level == "detailed":
-            lines.extend(["1. Setup Summary", f"Scanned {len(watchlist)} symbols; selected {len(top)} high-score setups.", "", "2. Top Setups"])
 
-    for idx, candidate in enumerate(top, 1):
+    for candidate in top:
         reason = candidate.evidence[0] if candidate.evidence else candidate.entry_logic
-        risk = candidate.risk_flags[0] if candidate.risk_flags else ("无" if language == "zh" else "none")
+        icon, signal = _signal_from_score(candidate.score)
         if language == "zh":
-            lines.append(
-                f"{idx}. {candidate.symbol} | {candidate.strategy} | 评分 {candidate.score} | {reason} | 风险提示: {risk}"
-            )
+            lines.append(f"{candidate.symbol} {icon} {signal} | 评分 {candidate.score}")
+            lines.append(f"{reason}")
         else:
-            lines.append(
-                f"{idx}. {candidate.symbol} | {candidate.strategy} | score {candidate.score} | {reason} | risk: {risk}"
-            )
+            lines.append(f"{candidate.symbol} {icon} {signal} | Score {candidate.score}")
+            lines.append(f"{reason}")
+        lines.append("")
 
     if detail_level == "detailed":
         if language == "zh":
-            lines.extend(["", "3. Strategy Plan", "仓位建议: 分批小仓位试错，优先高评分标的。", "失效条件: 核心入场逻辑被破坏或波动急剧放大。"])
+            lines.extend(["风险提示: 控制仓位，优先高评分标的。"])
         else:
-            lines.extend(["", "3. Strategy Plan", "Positioning: Start small and scale only on confirmation.", "Invalidation: Exit if core setup logic breaks."])
-    return "\n".join(lines)
+            lines.extend(["Risk note: keep sizing disciplined and prioritize higher-score setups."])
+    return "\n".join(lines).strip()
 
 
 def _top_market_stock_ideas(strategies: list[str], top_n: int = 5) -> list[dict]:
@@ -195,7 +239,8 @@ def _market_brief_message(
     schedule: str = "daily",
     language: str = "en",
 ) -> str:
-    snapshot = build_global_summary_response(schedule=schedule, language=language).market_data
+    summary_response = build_global_summary_response(schedule=schedule, language=language)
+    snapshot = summary_response.market_data
     lookup = {point.ticker: point for point in snapshot.values()}
 
     def _change_value(ticker: str) -> float | None:
@@ -226,6 +271,17 @@ def _market_brief_message(
 
     if detail_level == "brief":
         date_str = datetime.now(dt_tz.utc).strftime("%Y-%m-%d")
+        summary_text = _bounded_section_text(
+            summary_response.summary,
+            language=language,
+            min_chars=30,
+            max_chars=60,
+            filler=(
+                "市场情绪仍偏谨慎，等待成交量与广度同步改善。"
+                if language == "zh"
+                else "Sentiment is still cautious while participants wait for broader confirmation."
+            ),
+        )
         sector_map = {
             "Utilities": "XLU",
             "Financials": "XLF",
@@ -254,10 +310,29 @@ def _market_brief_message(
 
         if language == "zh":
             tone_map = {"risk-on": "偏风险偏好", "risk-off": "偏防御", "mixed": "中性偏谨慎"}
+            risk_line = _bounded_section_text(
+                f"情绪{tone_map.get(risk_tone, risk_tone)}，VIX {change_for('^VIX')}，关注收益率与宏观数据。",
+                language="zh",
+                min_chars=30,
+                max_chars=60,
+            )
+            outlook_line = _bounded_section_text(
+                "短线仍以震荡为主，若成交量与市场广度改善，再考虑逐步提高风险暴露。",
+                language="zh",
+                min_chars=30,
+                max_chars=60,
+            )
+            strategy_line = _bounded_section_text(
+                f"仓位建议60%-70%，当前立场{'中性偏进攻' if risk_tone != 'risk-off' else '中性偏防御'}，分批执行。",
+                language="zh",
+                min_chars=30,
+                max_chars=60,
+            )
             return (
                 f"US Market Daily Review | {date_str}\n\n"
                 "Market Snapshot\n"
-                f"美股情绪 {tone_map.get(risk_tone, risk_tone)}，VIX {change_for('^VIX')}。\n\n"
+                f"{summary_text}\n"
+                f"{risk_line}\n\n"
                 "Index Moves\n"
                 f"- S&P 500: {change_for('^GSPC')}\n"
                 f"- Nasdaq: {change_for('^IXIC')}\n"
@@ -268,19 +343,38 @@ def _market_brief_message(
                 f"- Leaders: {leaders}\n"
                 f"- Laggards: {laggards}\n\n"
                 "Risk Tone\n"
-                f"- Tone: {tone_map.get(risk_tone, risk_tone)}\n"
-                "- 关注收益率与宏观数据扰动。\n\n"
+                f"- {risk_line}\n\n"
+                "Near-Term Outlook (1–3 days)\n"
+                f"- {outlook_line}\n\n"
                 "Strategy View\n"
-                f"- Stance: {'Neutral-Offensive' if risk_tone != 'risk-off' else 'Neutral-Defensive'}\n"
-                "- Suggested exposure: 60-70%\n\n"
+                f"- {strategy_line}\n\n"
                 "Stock Idea\n"
                 f"- {stock_idea_line}"
             )
 
+        risk_line = _bounded_section_text(
+            f"Tone is {risk_tone}; VIX is {change_for('^VIX')}. Watch rates, Fed signals, and macro data.",
+            language="en",
+            min_chars=30,
+            max_chars=60,
+        )
+        outlook_line = _bounded_section_text(
+            "Bias is cautiously constructive, but upside needs broader participation and stronger breadth.",
+            language="en",
+            min_chars=30,
+            max_chars=60,
+        )
+        strategy_line = _bounded_section_text(
+            f"Stance is {'neutral-offensive' if risk_tone != 'risk-off' else 'neutral-defensive'} with ~70% exposure and staged entries.",
+            language="en",
+            min_chars=30,
+            max_chars=60,
+        )
         return (
             f"US Market Daily Review | {date_str}\n\n"
             "Market Snapshot\n"
-            f"US majors closed {risk_tone}; VIX {change_for('^VIX')} indicates the current volatility regime.\n\n"
+            f"{summary_text}\n"
+            f"{risk_line}\n\n"
             "Index Moves\n"
             f"- S&P 500: {change_for('^GSPC')}\n"
             f"- Nasdaq: {change_for('^IXIC')}\n"
@@ -291,13 +385,11 @@ def _market_brief_message(
             f"- Leaders: {leaders}\n"
             f"- Laggards: {laggards}\n\n"
             "Risk Tone\n"
-            f"- Tone: {risk_tone}\n"
-            "- Watch rates, Fed commentary, and macro data.\n\n"
+            f"- {risk_line}\n\n"
             "Near-Term Outlook (1–3 days)\n"
-            "- Bias: cautiously constructive unless breadth weakens.\n\n"
+            f"- {outlook_line}\n\n"
             "Strategy View\n"
-            f"- Stance: {'Neutral-Offensive' if risk_tone != 'risk-off' else 'Neutral-Defensive'}\n"
-            "- Suggested exposure: ~70%\n\n"
+            f"- {strategy_line}\n\n"
             "Stock Idea\n"
             f"- {stock_idea_line}"
         )
@@ -366,15 +458,43 @@ def _commodity_brief_message(
         sign = "+" if point.change_pct >= 0 else "-"
         return f"{sign}{abs(point.change_pct):.1f}%"
 
+    raw_summary = " ".join((summary.summary or "").split())
+
     if language == "zh":
+        snapshot_line = _bounded_section_text(
+            raw_summary,
+            language="zh",
+            min_chars=30,
+            max_chars=60,
+            filler="商品板块整体分化，短线以区间震荡为主，等待更明确驱动。",
+        )
+        risk_line = _bounded_section_text(
+            "重点关注美元与实际利率变化，防止价格受宏观数据超预期冲击。",
+            language="zh",
+            min_chars=30,
+            max_chars=60,
+        )
+        strategy_line = _bounded_section_text(
+            "策略上优先顺势交易，控制仓位，并在关键位确认后再追单。",
+            language="zh",
+            min_chars=30,
+            max_chars=60,
+        )
         lines = [
             "🛢 商品复盘",
             f"黄金 {change_for('GC=F')} | 原油 {change_for('CL=F')} | 白银 {change_for('SI=F')} | 铜 {change_for('HG=F')}",
+            "",
+            "Commodity Overview",
+            snapshot_line,
+            "",
+            "Risk & Plan",
+            f"- {risk_line}",
+            f"- {strategy_line}",
         ]
         if detail_level == "detailed":
-            lines.extend(["", "1. Market Summary", summary.summary[:220], "", "2. Top Commodity Setups"])
+            lines.extend(["", "Top Commodity Setups"])
         else:
-            lines.extend(["", "重点机会:"])
+            lines.extend(["", "重点机会"])
         if not candidates:
             lines.append("- 暂无高质量商品机会。")
         for idx, candidate in enumerate(candidates, 1):
@@ -382,14 +502,40 @@ def _commodity_brief_message(
             lines.append(f"{idx}. {candidate.symbol} | 评分 {candidate.score} | {reason}")
         return "\n".join(lines)
 
+    snapshot_line = _bounded_section_text(
+        raw_summary,
+        language="en",
+        min_chars=30,
+        max_chars=60,
+        filler="Commodities are mixed and range-bound, with conviction still limited.",
+    )
+    risk_line = _bounded_section_text(
+        "Watch dollar strength and real yields, which can quickly reshape precious metals and energy momentum.",
+        language="en",
+        min_chars=30,
+        max_chars=60,
+    )
+    strategy_line = _bounded_section_text(
+        "Prefer trend-following entries, keep size controlled, and add only after clean level confirmation.",
+        language="en",
+        min_chars=30,
+        max_chars=60,
+    )
     lines = [
         "🛢 Commodity Recap",
         f"Gold {change_for('GC=F')} | Oil {change_for('CL=F')} | Silver {change_for('SI=F')} | Copper {change_for('HG=F')}",
+        "",
+        "Commodity Overview",
+        snapshot_line,
+        "",
+        "Risk & Plan",
+        f"- {risk_line}",
+        f"- {strategy_line}",
     ]
     if detail_level == "detailed":
-        lines.extend(["", "1. Market Summary", summary.summary[:220], "", "2. Top Commodity Setups"])
+        lines.extend(["", "Top Commodity Setups"])
     else:
-        lines.extend(["", "Top ideas:"])
+        lines.extend(["", "Top ideas"])
     if not candidates:
         lines.append("- No strong commodity setups right now.")
     for idx, candidate in enumerate(candidates, 1):

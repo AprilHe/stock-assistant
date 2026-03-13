@@ -1,0 +1,22 @@
+id: pullback
+name: Pullback
+version: 1
+timeframe: daily_to_swing
+description: >
+  Buy controlled retracements in an existing uptrend, usually near short-term moving support.
+entry_signals:
+  - Uptrend intact: SMA20 above SMA50 and price above SMA50.
+  - Pullback towards SMA20 without deep structure break.
+  - Pullback volume not aggressively expanding.
+exit_signals:
+  - Close below SMA50.
+  - Structure low breaks.
+  - Upside target reached or momentum stalls.
+risk_controls:
+  - Avoid catching a knife after sharp trend damage.
+  - Cap risk with predefined invalidation.
+  - Reduce size in high-volatility regimes.
+prompt_hints:
+  - Separate healthy pullback from trend reversal.
+  - State where pullback thesis fails.
+

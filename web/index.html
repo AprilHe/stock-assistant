@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stock Assistant</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root {
+      --bg: #08111f;
+      --panel: rgba(7, 16, 28, 0.8);
+      --panel-strong: rgba(12, 24, 42, 0.95);
+      --line: rgba(132, 173, 223, 0.16);
+      --text: #e9f2ff;
+      --muted: #92a6c4;
+      --accent: #59d0a6;
+      --accent-2: #4da0ff;
+      --danger: #f87171;
+    }
+
+    body {
+      background:
+        radial-gradient(circle at top left, rgba(77, 160, 255, 0.22), transparent 28%),
+        radial-gradient(circle at top right, rgba(89, 208, 166, 0.18), transparent 24%),
+        linear-gradient(160deg, #050c17 0%, var(--bg) 48%, #09192d 100%);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    .fade-in { animation: fadeIn 0.4s ease; }
+    .glass {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+      backdrop-filter: blur(18px);
+    }
+    .hero-card {
+      background:
+        linear-gradient(135deg, rgba(77, 160, 255, 0.14), transparent 44%),
+        linear-gradient(150deg, rgba(89, 208, 166, 0.12), transparent 55%),
+        var(--panel-strong);
+      border: 1px solid rgba(132, 173, 223, 0.18);
+    }
+    .pill {
+      border: 1px solid rgba(132, 173, 223, 0.14);
+      background: rgba(255, 255, 255, 0.03);
+    }
+    .field {
+      background: rgba(4, 12, 22, 0.82);
+      border: 1px solid rgba(132, 173, 223, 0.16);
+      color: var(--text);
+    }
+    .field:focus {
+      outline: none;
+      border-color: rgba(77, 160, 255, 0.7);
+      box-shadow: 0 0 0 3px rgba(77, 160, 255, 0.16);
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent-2), var(--accent));
+      color: #04131f;
+      font-weight: 700;
+    }
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(132, 173, 223, 0.16);
+      color: var(--text);
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body class="font-sans">
+  <header class="px-6 py-6">
+    <div class="max-w-7xl mx-auto hero-card rounded-3xl px-6 py-6 md:px-8 md:py-8">
+      <div class="flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
+        <div class="max-w-2xl">
+          <div class="inline-flex items-center gap-2 pill rounded-full px-3 py-1 text-xs uppercase tracking-[0.3em] text-slate-300">
+            Daily / Swing Research Desk
+          </div>
+          <h1 class="mt-4 text-3xl font-semibold tracking-tight md:text-5xl">Stock Assistant</h1>
+          <p class="mt-3 max-w-xl text-sm leading-6 text-slate-300 md:text-base">
+            Configure your own strategy mix, watchlist, and report cadence. The dashboard now supports a persistent web profile with custom reports.
+          </p>
+        </div>
+        <div class="rounded-2xl border border-white/10 bg-black/15 px-4 py-3 text-sm text-slate-300">
+          <div class="text-xs uppercase tracking-[0.24em] text-slate-500">Last Updated</div>
+          <div id="last-updated" class="mt-1 font-medium text-slate-100">Not loaded yet</div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-6 pb-16">
+    <div class="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+      <section class="space-y-6">
+        <div class="glass rounded-3xl p-6">
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <h2 class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-400">Market Overview</h2>
+              <p class="mt-1 text-sm text-slate-500">Major assets and benchmark tape.</p>
+            </div>
+            <button onclick="loadMarket()" class="btn-secondary rounded-xl px-4 py-2 text-sm transition hover:bg-white/10">Refresh</button>
+          </div>
+          <div id="market-grid" class="grid grid-cols-2 gap-3 md:grid-cols-3">
+            <div class="col-span-full text-center text-sm text-slate-500 py-8">Loading market data...</div>
+          </div>
+        </div>
+
+        <div class="glass rounded-3xl p-6">
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <h2 class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-400">AI Market Summary</h2>
+              <p class="mt-1 text-sm text-slate-500">Global macro snapshot from the shared market set.</p>
+            </div>
+            <button onclick="loadSummary()" id="summary-btn" class="btn-primary rounded-xl px-4 py-2 text-sm transition hover:opacity-90">
+              Generate Summary
+            </button>
+          </div>
+          <div id="summary-box" class="min-h-24 rounded-2xl border border-white/10 bg-slate-950/40 p-5 text-sm leading-relaxed text-slate-300">
+            <span class="text-slate-500">Click "Generate Summary" to get an AI-powered market analysis.</span>
+          </div>
+        </div>
+
+        <div class="glass rounded-3xl p-6">
+          <h2 class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-400 mb-4">Analyze a Stock</h2>
+          <div class="mb-3">
+            <label for="analyze-strategy" class="mb-2 block text-xs uppercase tracking-[0.24em] text-slate-500">Strategy Lens (Optional)</label>
+            <select id="analyze-strategy" class="field w-full rounded-2xl px-4 py-3 text-sm">
+              <option value="">None (general)</option>
+            </select>
+          </div>
+          <div class="flex flex-col gap-3 md:flex-row">
+            <input
+              id="ticker-input"
+              type="text"
+              placeholder="Enter ticker (e.g. AAPL, META, NVDA)"
+              class="field w-full rounded-2xl px-4 py-3 text-sm placeholder:text-slate-500"
+              onkeydown="if(event.key==='Enter') analyzeTicker()"
+            />
+            <button onclick="analyzeTicker()" class="btn-primary rounded-2xl px-5 py-3 text-sm transition hover:opacity-90">
+              Analyze
+            </button>
+          </div>
+          <div id="analysis-box" class="mt-4 hidden rounded-2xl border border-white/10 bg-slate-950/40 p-5 text-sm leading-relaxed text-slate-300"></div>
+        </div>
+      </section>
+
+      <section class="space-y-6">
+        <div class="glass rounded-3xl p-6">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <h2 class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-400">Settings</h2>
+              <p class="mt-1 text-sm text-slate-500">Persistent web profile for report generation.</p>
+            </div>
+            <span class="pill rounded-full px-3 py-1 text-xs text-slate-300">Profile</span>
+          </div>
+
+          <div class="mt-5 space-y-5">
+            <div>
+              <label for="profile-id" class="mb-2 block text-xs uppercase tracking-[0.24em] text-slate-500">Profile Id</label>
+              <div class="flex gap-3">
+                <input id="profile-id" type="text" class="field w-full rounded-2xl px-4 py-3 text-sm" value="web-default" />
+                <button onclick="loadPreferences()" class="btn-secondary rounded-2xl px-4 py-3 text-sm transition hover:bg-white/10">Load</button>
+              </div>
+            </div>
+
+            <div>
+              <label for="watchlist-input" class="mb-2 block text-xs uppercase tracking-[0.24em] text-slate-500">Watchlist</label>
+              <textarea id="watchlist-input" rows="4" class="field w-full rounded-2xl px-4 py-3 text-sm" placeholder="AAPL, NVDA, GC=F, CL=F"></textarea>
+              <p class="mt-2 text-xs text-slate-500">Comma-separated. Stocks and commodities can be mixed.</p>
+            </div>
+
+            <div>
+              <div class="mb-2 block text-xs uppercase tracking-[0.24em] text-slate-500">Strategies</div>
+              <div class="grid gap-2 sm:grid-cols-2">
+                <label class="pill flex items-center gap-3 rounded-2xl px-4 py-3 text-sm text-slate-300">
+                  <input type="checkbox" name="strategies" value="breakout" class="h-4 w-4" />
+                  <span>Breakout</span>
+                </label>
+                <label class="pill flex items-center gap-3 rounded-2xl px-4 py-3 text-sm text-slate-300">
+                  <input type="checkbox" name="strategies" value="pullback" class="h-4 w-4" />
+                  <span>Pullback</span>
+                </label>
+                <label class="pill flex items-center gap-3 rounded-2xl px-4 py-3 text-sm text-slate-300 sm:col-span-2">
+                  <input type="checkbox" name="strategies" value="commodity_macro" class="h-4 w-4" />
+                  <span>Commodity Macro</span>
+                </label>
+              </div>
+            </div>
+
+            <div>
+              <div class="mb-2 block text-xs uppercase tracking-[0.24em] text-slate-500">Bot Push Sections</div>
+              <div class="grid gap-2 sm:grid-cols-3">
+                <label class="pill flex items-center gap-3 rounded-2xl px-4 py-3 text-sm text-slate-300">
+                  <input type="checkbox" name="report-sections" value="watchlist" class="h-4 w-4" checked disabled />
+                  <span>Watchlist</span>
+                </label>
+                <label class="pill flex items-center gap-3 rounded-2xl px-4 py-3 text-sm text-slate-300">
+                  <input type="checkbox" name="report-sections" value="market" class="h-4 w-4" />
+                  <span>US Market</span>
+                </label>
+                <label class="pill flex items-center gap-3 rounded-2xl px-4 py-3 text-sm text-slate-300">
+                  <input type="checkbox" name="report-sections" value="commodity" class="h-4 w-4" />
+                  <span>Commodity</span>
+                </label>
+              </div>
+              <p class="mt-2 text-xs text-slate-500">Watchlist summary is always sent first. Market and commodity are optional second and third messages.</p>
+            </div>
+
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label for="report-mode" class="mb-2 block text-xs uppercase tracking-[0.24em] text-slate-500">Report Mode</label>
+                <select id="report-mode" class="field w-full rounded-2xl px-4 py-3 text-sm">
+                  <option value="summary">summary</option>
+                  <option value="ideas">ideas</option>
+                  <option value="summary+ideas">summary+ideas</option>
+                </select>
+              </div>
+              <div>
+                <label for="schedule" class="mb-2 block text-xs uppercase tracking-[0.24em] text-slate-500">Schedule</label>
+                <select id="schedule" class="field w-full rounded-2xl px-4 py-3 text-sm">
+                  <option value="daily">daily</option>
+                  <option value="twice">twice</option>
+                  <option value="weekly">weekly</option>
+                  <option value="off">off</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label for="language" class="mb-2 block text-xs uppercase tracking-[0.24em] text-slate-500">Language</label>
+                <select id="language" class="field w-full rounded-2xl px-4 py-3 text-sm">
+                  <option value="en">English</option>
+                  <option value="zh">Chinese</option>
+                </select>
+              </div>
+              <div>
+                <label for="push-time" class="mb-2 block text-xs uppercase tracking-[0.24em] text-slate-500">Push Time</label>
+                <input id="push-time" type="time" class="field w-full rounded-2xl px-4 py-3 text-sm" value="08:00" />
+              </div>
+            </div>
+
+            <div>
+              <label for="timezone" class="mb-2 block text-xs uppercase tracking-[0.24em] text-slate-500">Timezone</label>
+              <input
+                id="timezone"
+                type="text"
+                class="field w-full rounded-2xl px-4 py-3 text-sm"
+                value="UTC"
+                placeholder="Europe/London, Asia/Shanghai, America/New_York"
+              />
+              <p class="mt-2 text-xs text-slate-500">Use a valid IANA timezone name.</p>
+            </div>
+
+            <div class="flex flex-col gap-3 sm:flex-row">
+              <button onclick="savePreferences()" id="save-prefs-btn" class="btn-primary rounded-2xl px-4 py-3 text-sm transition hover:opacity-90">
+                Save Settings
+              </button>
+              <button onclick="loadProfileReport()" id="report-btn" class="btn-secondary rounded-2xl px-4 py-3 text-sm transition hover:bg-white/10">
+                Generate My Report
+              </button>
+            </div>
+
+            <div id="prefs-status" class="hidden rounded-2xl border px-4 py-3 text-sm"></div>
+          </div>
+        </div>
+
+        <div class="glass rounded-3xl p-6">
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <h2 class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-400">My Report</h2>
+              <p class="mt-1 text-sm text-slate-500">Generated from saved settings for the current profile.</p>
+            </div>
+          </div>
+          <div id="profile-report-box" class="min-h-36 rounded-2xl border border-white/10 bg-slate-950/40 p-5 text-sm leading-relaxed text-slate-300">
+            <span class="text-slate-500">Load or save a profile, then generate a personalized report.</span>
+          </div>
+        </div>
+
+        <div class="glass rounded-3xl p-6">
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <h2 class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-400">Report History</h2>
+              <p class="mt-1 text-sm text-slate-500">Saved markdown and JSON reports for this profile.</p>
+            </div>
+            <button onclick="loadReportHistory()" class="btn-secondary rounded-xl px-4 py-2 text-sm transition hover:bg-white/10">Refresh</button>
+          </div>
+          <div id="report-history" class="space-y-3">
+            <div class="text-sm text-slate-500">No saved reports loaded yet.</div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="border-t border-white/10 px-6 py-4">
+    <p class="text-center text-xs text-slate-500">
+      For informational purposes only. Not financial advice.
+      <a href="/docs" class="ml-2 text-sky-400 hover:text-sky-300">API Docs</a>
+    </p>
+  </footer>
+
+  <script>
+    function setUpdated() {
+      document.getElementById("last-updated").textContent = new Date().toLocaleString();
+    }
+
+    function changeColor(pct) {
+      if (pct === null || pct === undefined) return "text-slate-400";
+      return pct >= 0 ? "text-emerald-400" : "text-rose-400";
+    }
+
+    function formatChange(pct) {
+      if (pct === null || pct === undefined) return "—";
+      const sign = pct >= 0 ? "▲ +" : "▼ ";
+      return `${sign}${Math.abs(pct).toFixed(2)}%`;
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function getProfileId() {
+      return document.getElementById("profile-id").value.trim() || "web-default";
+    }
+
+    function getSelectedStrategies() {
+      return Array.from(document.querySelectorAll('input[name="strategies"]:checked')).map((input) => input.value);
+    }
+
+    function getSelectedReportSections() {
+      const sections = Array.from(document.querySelectorAll('input[name="report-sections"]:checked')).map((input) => input.value);
+      if (!sections.includes("watchlist")) {
+        sections.unshift("watchlist");
+      }
+      return Array.from(new Set(sections));
+    }
+
+    function setSelectedStrategies(strategies) {
+      const selected = new Set(strategies || []);
+      document.querySelectorAll('input[name="strategies"]').forEach((input) => {
+        input.checked = selected.has(input.value);
+      });
+    }
+
+    function setSelectedReportSections(sections) {
+      const selected = new Set(sections || ["watchlist"]);
+      document.querySelectorAll('input[name="report-sections"]').forEach((input) => {
+        input.checked = selected.has(input.value);
+      });
+      document.querySelector('input[name="report-sections"][value="watchlist"]').checked = true;
+    }
+
+    function showPrefsStatus(message, type = "info") {
+      const box = document.getElementById("prefs-status");
+      const styles = {
+        info: "border-sky-500/30 bg-sky-500/10 text-sky-200",
+        success: "border-emerald-500/30 bg-emerald-500/10 text-emerald-200",
+        error: "border-rose-500/30 bg-rose-500/10 text-rose-200",
+      };
+      box.className = `rounded-2xl border px-4 py-3 text-sm ${styles[type] || styles.info}`;
+      box.textContent = message;
+      box.classList.remove("hidden");
+    }
+
+    function renderTextBox(elementId, text) {
+      document.getElementById(elementId).innerHTML = `<div class="fade-in whitespace-pre-wrap">${escapeHtml(text)}</div>`;
+    }
+
+    function proposalTone(proposal) {
+      const normalized = String(proposal || "").toLowerCase();
+      if (normalized === "buy") {
+        return "border-emerald-500/30 bg-emerald-500/10 text-emerald-300";
+      }
+      if (normalized === "sell") {
+        return "border-rose-500/30 bg-rose-500/10 text-rose-300";
+      }
+      return "border-amber-500/30 bg-amber-500/10 text-amber-300";
+    }
+
+    function renderBulletList(items) {
+      if (!Array.isArray(items) || !items.length) {
+        return `<div class="text-slate-500">No items.</div>`;
+      }
+      return `<ul class="space-y-2">${items.map((item) => `<li class="flex gap-2"><span class="text-sky-300">•</span><span>${escapeHtml(item)}</span></li>`).join("")}</ul>`;
+    }
+
+    function renderStructuredAnalysis(elementId, ticker, payload) {
+      const container = document.getElementById(elementId);
+      const tone = proposalTone(payload.proposal);
+      container.innerHTML = `
+        <div class="fade-in space-y-4">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] ${tone}">
+              ${escapeHtml(payload.proposal || "Hold")}
+            </span>
+            <span class="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs text-slate-300">
+              Confidence ${Number(payload.confidence || 0)}/100
+            </span>
+            <span class="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs text-slate-300">
+              Horizon ${escapeHtml(payload.horizon || "weeks_to_months")}
+            </span>
+          </div>
+
+          <div class="rounded-xl border border-white/10 bg-slate-900/40 p-4">
+            <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Summary</div>
+            <div class="mt-2 leading-relaxed text-slate-200">${escapeHtml(payload.summary || `${ticker} analysis generated.`)}</div>
+          </div>
+
+          <div class="grid gap-3 md:grid-cols-3">
+            <div class="rounded-xl border border-white/10 bg-slate-900/40 p-4">
+              <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Reasoning</div>
+              <div class="mt-3">${renderBulletList(payload.reasoning)}</div>
+            </div>
+            <div class="rounded-xl border border-white/10 bg-slate-900/40 p-4">
+              <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Risk</div>
+              <div class="mt-3">${renderBulletList(payload.risks)}</div>
+            </div>
+            <div class="rounded-xl border border-white/10 bg-slate-900/40 p-4">
+              <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Watch Triggers</div>
+              <div class="mt-3">${renderBulletList(payload.triggers)}</div>
+            </div>
+          </div>
+
+          <div class="text-xs text-slate-500">
+            For informational purposes only. Not financial advice.
+          </div>
+        </div>`;
+    }
+
+    async function loadAnalyzeStrategies() {
+      const select = document.getElementById("analyze-strategy");
+      try {
+        const res = await fetch("/api/strategies?capability=analysis");
+        const data = await res.json();
+        if (!res.ok) return;
+        const items = Array.isArray(data.strategies) ? data.strategies : [];
+        const options = [`<option value="">None (general)</option>`];
+        for (const item of items) {
+          options.push(
+            `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}${item.summary ? ` - ${escapeHtml(item.summary)}` : ""}</option>`
+          );
+        }
+        select.innerHTML = options.join("");
+      } catch (_e) {
+        // Keep default option if strategy endpoint is unavailable.
+      }
+    }
+
+    async function loadMarket() {
+      const grid = document.getElementById("market-grid");
+      grid.innerHTML = `<div class="col-span-full text-center text-sm text-slate-500 py-8">Loading...</div>`;
+      try {
+        const res = await fetch("/api/market");
+        const payload = await res.json();
+        const data = payload.market_data || payload;
+        grid.innerHTML = "";
+        for (const [name, item] of Object.entries(data)) {
+          const colorClass = changeColor(item.change_pct);
+          const changeText = item.error ? "unavailable" : formatChange(item.change_pct);
+          const priceText = item.price !== null ? `$${Number(item.price).toLocaleString()}` : "—";
+          grid.innerHTML += `
+            <div class="rounded-2xl border border-white/10 bg-slate-950/40 p-4 fade-in">
+              <div class="text-xs uppercase tracking-[0.22em] text-slate-500">${escapeHtml(name)}</div>
+              <div class="mt-2 text-xl font-semibold">${priceText}</div>
+              <div class="mt-1 text-sm ${colorClass}">${changeText}</div>
+            </div>`;
+        }
+        setUpdated();
+      } catch (e) {
+        grid.innerHTML = `<div class="col-span-full text-center text-sm text-rose-400 py-8">Failed to load market data.</div>`;
+      }
+    }
+
+    async function loadSummary() {
+      const box = document.getElementById("summary-box");
+      const btn = document.getElementById("summary-btn");
+      box.innerHTML = `<span class="text-slate-500">Generating summary...</span>`;
+      btn.disabled = true;
+      btn.textContent = "Generating...";
+      try {
+        const res = await fetch("/api/summary");
+        const data = await res.json();
+        renderTextBox("summary-box", data.summary);
+      } catch (e) {
+        box.innerHTML = `<span class="text-rose-400">Failed to generate summary.</span>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Regenerate";
+      }
+    }
+
+    async function analyzeTicker() {
+      const input = document.getElementById("ticker-input");
+      const box = document.getElementById("analysis-box");
+      const ticker = input.value.trim().toUpperCase();
+      if (!ticker) {
+        input.focus();
+        return;
+      }
+
+      box.classList.remove("hidden");
+      box.innerHTML = `<span class="text-slate-500">Analyzing ${escapeHtml(ticker)}...</span>`;
+      try {
+        const strategy = document.getElementById("analyze-strategy").value.trim();
+        const query = strategy ? `?strategy=${encodeURIComponent(strategy)}` : "";
+        const res = await fetch(`/api/analyze/${encodeURIComponent(ticker)}${query}`);
+        const data = await res.json();
+        if (!res.ok) {
+          box.innerHTML = `<span class="text-rose-400">Error: ${escapeHtml(data.detail || "Unknown error")}</span>`;
+          return;
+        }
+        if (data.analysis_structured) {
+          renderStructuredAnalysis("analysis-box", ticker, data.analysis_structured);
+        } else {
+          renderTextBox("analysis-box", data.analysis);
+        }
+      } catch (e) {
+        box.innerHTML = `<span class="text-rose-400">Failed to analyze ${escapeHtml(ticker)}.</span>`;
+      }
+    }
+
+    async function loadPreferences() {
+      const profileId = getProfileId();
+      showPrefsStatus(`Loading settings for ${profileId}...`, "info");
+      try {
+        const res = await fetch(`/api/preferences/${encodeURIComponent(profileId)}`);
+        const prefs = await res.json();
+        if (!res.ok) {
+          throw new Error(prefs.detail || "Failed to load preferences.");
+        }
+        document.getElementById("watchlist-input").value = (prefs.watchlist || []).join(", ");
+        document.getElementById("report-mode").value = prefs.report_mode || "summary";
+        document.getElementById("schedule").value = prefs.schedule || "weekly";
+        document.getElementById("language").value = prefs.language || "en";
+        document.getElementById("timezone").value = prefs.timezone || "UTC";
+        document.getElementById("push-time").value = prefs.push_time || "08:00";
+        setSelectedStrategies(prefs.strategies || ["breakout"]);
+        setSelectedReportSections(prefs.report_sections || ["watchlist"]);
+        showPrefsStatus(`Loaded settings for ${profileId}.`, "success");
+        loadReportHistory();
+      } catch (e) {
+        showPrefsStatus(e.message || "Failed to load settings.", "error");
+      }
+    }
+
+    async function savePreferences() {
+      const profileId = getProfileId();
+      const button = document.getElementById("save-prefs-btn");
+      const payload = {
+        watchlist: document.getElementById("watchlist-input").value.split(",").map((part) => part.trim()).filter(Boolean),
+        strategies: getSelectedStrategies(),
+        report_sections: getSelectedReportSections(),
+        report_mode: document.getElementById("report-mode").value,
+        schedule: document.getElementById("schedule").value,
+        language: document.getElementById("language").value,
+        timezone: document.getElementById("timezone").value.trim(),
+        push_time: document.getElementById("push-time").value,
+      };
+
+      button.disabled = true;
+      button.textContent = "Saving...";
+      try {
+        const res = await fetch(`/api/preferences/${encodeURIComponent(profileId)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || "Failed to save preferences.");
+        }
+        document.getElementById("watchlist-input").value = (data.watchlist || []).join(", ");
+        document.getElementById("report-mode").value = data.report_mode || payload.report_mode;
+        document.getElementById("schedule").value = data.schedule || payload.schedule;
+        document.getElementById("language").value = data.language || payload.language;
+        document.getElementById("timezone").value = data.timezone || payload.timezone;
+        document.getElementById("push-time").value = data.push_time || payload.push_time;
+        setSelectedStrategies(data.strategies || payload.strategies);
+        setSelectedReportSections(data.report_sections || payload.report_sections);
+        showPrefsStatus(`Saved settings for ${profileId}.`, "success");
+        loadReportHistory();
+      } catch (e) {
+        showPrefsStatus(e.message || "Failed to save settings.", "error");
+      } finally {
+        button.disabled = false;
+        button.textContent = "Save Settings";
+      }
+    }
+
+    async function loadProfileReport() {
+      const profileId = getProfileId();
+      const button = document.getElementById("report-btn");
+      const box = document.getElementById("profile-report-box");
+      button.disabled = true;
+      button.textContent = "Generating...";
+      box.innerHTML = `<span class="text-slate-500">Building personalized report for ${escapeHtml(profileId)}...</span>`;
+      try {
+        const res = await fetch(`/api/report/${encodeURIComponent(profileId)}`);
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || "Failed to generate report.");
+        }
+        renderTextBox("profile-report-box", data.report);
+        showPrefsStatus(`Generated personalized report for ${profileId}.`, "success");
+        loadReportHistory();
+      } catch (e) {
+        box.innerHTML = `<span class="text-rose-400">${escapeHtml(e.message || "Failed to generate report.")}</span>`;
+        showPrefsStatus(e.message || "Failed to generate report.", "error");
+      } finally {
+        button.disabled = false;
+        button.textContent = "Generate My Report";
+      }
+    }
+
+    async function previewSavedReport(reportId) {
+      const profileId = getProfileId();
+      const box = document.getElementById("profile-report-box");
+      box.innerHTML = `<span class="text-slate-500">Loading saved report ${escapeHtml(reportId)}...</span>`;
+      try {
+        const res = await fetch(`/api/reports/${encodeURIComponent(profileId)}/${encodeURIComponent(reportId)}/download?format=md`);
+        const data = await res.text();
+        if (!res.ok) {
+          throw new Error("Failed to load report.");
+        }
+        renderTextBox("profile-report-box", data);
+      } catch (e) {
+        box.innerHTML = `<span class="text-rose-400">${escapeHtml(e.message || "Failed to load report.")}</span>`;
+      }
+    }
+
+    async function loadReportHistory() {
+      const profileId = getProfileId();
+      const box = document.getElementById("report-history");
+      box.innerHTML = `<div class="text-sm text-slate-500">Loading saved reports...</div>`;
+      try {
+        const res = await fetch(`/api/reports/${encodeURIComponent(profileId)}`);
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || "Failed to load history.");
+        }
+        const reports = data.reports || [];
+        if (!reports.length) {
+          box.innerHTML = `<div class="text-sm text-slate-500">No saved reports yet.</div>`;
+          return;
+        }
+        box.innerHTML = reports.map((report) => `
+          <div class="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div class="text-sm font-medium text-slate-100">${escapeHtml(report.report_id)}</div>
+                <div class="mt-1 text-xs text-slate-500">${escapeHtml(report.created_at)}</div>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <button onclick="previewSavedReport('${report.report_id}')" class="btn-secondary rounded-xl px-3 py-2 text-xs hover:bg-white/10">Preview</button>
+                <a href="/api/reports/${encodeURIComponent(profileId)}/${encodeURIComponent(report.report_id)}/download?format=md" class="btn-secondary rounded-xl px-3 py-2 text-xs hover:bg-white/10">Download MD</a>
+                <a href="/api/reports/${encodeURIComponent(profileId)}/${encodeURIComponent(report.report_id)}/download?format=json" class="btn-secondary rounded-xl px-3 py-2 text-xs hover:bg-white/10">Download JSON</a>
+              </div>
+            </div>
+          </div>
+        `).join("");
+      } catch (e) {
+        box.innerHTML = `<div class="text-sm text-rose-400">${escapeHtml(e.message || "Failed to load history.")}</div>`;
+      }
+    }
+
+    loadMarket();
+    loadAnalyzeStrategies();
+    loadPreferences();
+  </script>
+</body>
+</html>

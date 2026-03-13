@@ -1,0 +1,126 @@
+strategies:
+  - id: breakout
+    name: Breakout
+    summary: Trade fresh range highs with trend and volume confirmation.
+    tags:
+      - trend
+      - momentum
+      - swing
+    asset_types:
+      - stock
+    capabilities:
+      analysis: true
+      screen: true
+      backtest: true
+    python_impl: breakout
+    yaml_file: breakout.yaml
+    md_file: breakout.md
+
+  - id: pullback
+    name: Pullback
+    summary: Buy retracements in established uptrends near dynamic support.
+    tags:
+      - trend
+      - mean-reversion
+      - swing
+    asset_types:
+      - stock
+    capabilities:
+      analysis: true
+      screen: true
+      backtest: true
+    python_impl: pullback
+    yaml_file: pullback.yaml
+    md_file: pullback.md
+
+  - id: commodity_macro
+    name: Commodity Macro
+    summary: Align commodity direction with trend plus USD/rates/risk backdrop.
+    tags:
+      - commodity
+      - macro
+      - trend
+    asset_types:
+      - commodity
+    capabilities:
+      analysis: true
+      screen: true
+      backtest: true
+    python_impl: commodity_macro
+    yaml_file: commodity_macro.yaml
+    md_file: commodity_macro.md
+
+  - id: trend_following
+    name: Trend Following
+    summary: Ride established trends with moving-average structure and trend slope confirmation.
+    tags:
+      - trend
+      - momentum
+      - stock
+      - commodity
+    asset_types:
+      - stock
+      - commodity
+    capabilities:
+      analysis: true
+      screen: true
+      backtest: true
+    python_impl: trend_following
+    yaml_file: trend_following.yaml
+    md_file: trend_following.md
+
+  - id: mean_reversion
+    name: Mean Reversion
+    summary: Trade oversold deviations back toward mean with momentum stabilization filters.
+    tags:
+      - mean-reversion
+      - stock
+      - commodity
+      - swing
+    asset_types:
+      - stock
+      - commodity
+    capabilities:
+      analysis: true
+      screen: true
+      backtest: true
+    python_impl: mean_reversion
+    yaml_file: mean_reversion.yaml
+    md_file: mean_reversion.md
+
+  - id: donchian_breakout
+    name: Donchian Breakout
+    summary: Follow price breakouts above Donchian channel highs with systematic exits.
+    tags:
+      - breakout
+      - trend
+      - stock
+      - commodity
+    asset_types:
+      - stock
+      - commodity
+    capabilities:
+      analysis: true
+      screen: true
+      backtest: true
+    python_impl: donchian_breakout
+    yaml_file: donchian_breakout.yaml
+    md_file: donchian_breakout.md
+
+  - id: emotion_cycle
+    name: Emotion Cycle
+    summary: Track crowd emotion extremes and fade euphoria/panic with confirmation.
+    tags:
+      - sentiment
+      - contrarian
+      - swing
+    asset_types:
+      - stock
+      - commodity
+    capabilities:
+      analysis: true
+      screen: false
+      backtest: false
+    python_impl: ""
+    yaml_file: emotion_cycle.yaml
+    md_file: emotion_cycle.md

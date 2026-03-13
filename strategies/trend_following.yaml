@@ -1,0 +1,21 @@
+id: trend_following
+name: Trend Following
+version: 1
+timeframe: daily_to_swing
+description: >
+  Stay aligned with persistent trends and avoid counter-trend trades unless structure breaks.
+entry_signals:
+  - Close is above SMA50.
+  - SMA20 is above SMA50.
+  - SMA50 slope is positive.
+exit_signals:
+  - Close drops below SMA50.
+  - SMA20 crosses below SMA50.
+risk_controls:
+  - Avoid entries when price is far above short trend.
+  - Scale down in high-volatility regimes.
+  - Use structural invalidation levels.
+prompt_hints:
+  - Emphasize trend durability vs late-stage extension risk.
+  - State what confirms trend continuation in coming sessions.
+

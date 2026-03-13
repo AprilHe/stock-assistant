@@ -1,0 +1,21 @@
+id: donchian_breakout
+name: Donchian Breakout
+version: 1
+timeframe: daily_to_swing
+description: >
+  Enter on channel breakouts and use systematic channel-based exits to stay in trends.
+entry_signals:
+  - Close above 20-day Donchian upper band.
+  - Prefer positive volume confirmation.
+  - Avoid entries after excessive one-day extension.
+exit_signals:
+  - Close below 10-day Donchian lower band.
+  - Stop/target overrides in abnormal conditions.
+risk_controls:
+  - Control slippage around breakout gaps.
+  - Avoid low-liquidity instruments.
+  - Use fixed risk per trade.
+prompt_hints:
+  - Report breakout quality and participation quality separately.
+  - Mention failed-breakout and whipsaw risk explicitly.
+

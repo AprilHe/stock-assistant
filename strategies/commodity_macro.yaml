@@ -1,0 +1,23 @@
+id: commodity_macro
+name: Commodity Macro
+version: 1
+timeframe: daily_to_swing
+description: >
+  Combine commodity trend structure with macro context such as USD direction,
+  rates behavior, and broad risk appetite.
+entry_signals:
+  - Commodity trend is positive on 20/50-day structure.
+  - Macro backdrop is supportive (USD/rates/risk conditions).
+  - Medium-term momentum is not deteriorating.
+exit_signals:
+  - Close below short trend proxy.
+  - Macro backdrop flips to a clear headwind.
+  - Volatility regime turns unstable.
+risk_controls:
+  - Size down around major macro events.
+  - Monitor cross-asset confirmation signals.
+  - Use hard stops due to gap and event risk.
+prompt_hints:
+  - Discuss both commodity-specific and macro drivers.
+  - Explicitly note USD and rates impact when relevant.
+

@@ -1,0 +1,22 @@
+id: breakout
+name: Breakout
+version: 1
+timeframe: daily_to_swing
+description: >
+  Enter when price breaks above recent range highs with trend and volume confirmation.
+entry_signals:
+  - Close above prior 20-day high.
+  - Trend alignment: close > SMA20 > SMA50.
+  - Volume expansion versus recent average.
+exit_signals:
+  - Close back below SMA20.
+  - Hard stop based on ATR or structure.
+  - Time stop if no follow-through.
+risk_controls:
+  - Avoid low-volume breakouts.
+  - De-risk if volatility spikes.
+  - Limit position size per trade.
+prompt_hints:
+  - Distinguish valid breakout from failed breakout risk.
+  - Mention extension risk if move is already stretched.
+

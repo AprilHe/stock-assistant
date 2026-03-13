@@ -1,0 +1,25 @@
+id: emotion_cycle
+name: Emotion Cycle
+version: 1
+timeframe: daily_to_swing
+description: >
+  Analyze where the asset sits in the crowd emotion cycle
+  (disbelief -> optimism -> euphoria -> anxiety -> panic -> capitulation -> disbelief).
+  Prefer contrarian positioning at emotional extremes with price confirmation.
+entry_signals:
+  - Panic/capitulation narrative appears while downside momentum starts to slow.
+  - Euphoria narrative appears while upside extension and momentum divergence increase.
+  - Require at least one objective confirmation (trend break, support reclaim, or failed breakout).
+exit_signals:
+  - Emotional narrative mean-reverts to neutral.
+  - Price invalidates the initial setup level.
+  - Reward target reached before narrative shift.
+risk_controls:
+  - Do not enter if volatility regime is unstable.
+  - Use hard invalidation level from recent swing high/low.
+  - Reduce position size when macro event risk is near.
+prompt_hints:
+  - Separate narrative mood from price confirmation.
+  - Avoid absolute language; express uncertainty explicitly.
+  - Mention what would invalidate the current thesis.
+

@@ -1,0 +1,22 @@
+id: mean_reversion
+name: Mean Reversion
+version: 1
+timeframe: daily_to_swing
+description: >
+  Enter when price deviates below short-term statistical bands and momentum is oversold.
+entry_signals:
+  - Close is below lower Bollinger band (20,2).
+  - RSI(14) is in oversold zone.
+  - Prefer setups where structure is not fully broken.
+exit_signals:
+  - Price reverts toward SMA20.
+  - RSI normalizes toward neutral.
+  - Hard stop if downside acceleration continues.
+risk_controls:
+  - This is often counter-trend; keep tighter risk.
+  - Skip when volatility regime is extreme.
+  - Use smaller size than trend-following setups.
+prompt_hints:
+  - Distinguish healthy reversion setup from structural breakdown.
+  - Explicitly mention invalidation level.
+

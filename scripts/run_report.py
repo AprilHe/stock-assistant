@@ -43,29 +43,33 @@ load_dotenv()
 _TELEGRAM_MAX_CHARS = 4000  # Telegram API limit is 4096; keep a small margin
 
 
-def _send_telegram(token: str, chat_id: str, text: str) -> bool:
-    """Send text to a Telegram chat, splitting into chunks if needed."""
+def _chunk_text(text: str, max_chars: int = _TELEGRAM_MAX_CHARS) -> list[str]:
+    return [text[i : i + max_chars] for i in range(0, len(text), max_chars)] or [""]
+
+
+def _send_telegram_messages(token: str, chat_id: str, messages: list[str]) -> bool:
+    """Send one or more messages to Telegram, chunking oversized messages."""
     import requests
 
     ok = True
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    for i in range(0, len(text), _TELEGRAM_MAX_CHARS):
-        chunk = text[i : i + _TELEGRAM_MAX_CHARS]
-        try:
-            resp = requests.post(
-                url,
-                json={"chat_id": chat_id, "text": chunk},
-                timeout=30,
-            )
-            if not resp.ok:
-                ok = False
-                print(
-                    f"[WARN] Telegram send failed: {resp.status_code} {resp.text}",
-                    file=sys.stderr,
+    for message in messages:
+        for chunk in _chunk_text(message):
+            try:
+                resp = requests.post(
+                    url,
+                    json={"chat_id": chat_id, "text": chunk},
+                    timeout=30,
                 )
-        except requests.RequestException as exc:
-            ok = False
-            print(f"[WARN] Telegram send failed: {exc}", file=sys.stderr)
+                if not resp.ok:
+                    ok = False
+                    print(
+                        f"[WARN] Telegram send failed: {resp.status_code} {resp.text}",
+                        file=sys.stderr,
+                    )
+            except requests.RequestException as exc:
+                ok = False
+                print(f"[WARN] Telegram send failed: {exc}", file=sys.stderr)
 
     return ok
 
@@ -201,16 +205,31 @@ def main() -> None:
         print(error_msg, file=sys.stderr)
         if args.send_telegram:
             print("\nAttempting to send error notification to Telegram...")
-            error_notified = _send_telegram(token, chat_id, f"Stock Assistant report failed:\n{exc}")
+            error_notified = _send_telegram_messages(
+                token,
+                chat_id,
+                [f"Stock Assistant report failed:\n{exc}"],
+            )
             if not error_notified:
                 print("[WARN] Error notification could not be delivered to Telegram.", file=sys.stderr)
 
     # Telegram delivery
     if args.send_telegram and report_md is not None:
-        print(f"\nSending to Telegram chat {chat_id}...")
-        notified = _send_telegram(token, chat_id, report_md)
+        print(f"\nSending sectioned Telegram messages to chat {chat_id}...")
+        from app.services.report_service import build_push_messages
+
+        push_mode = os.environ.get("PUSH_MODE", "brief")
+        telegram_messages = build_push_messages(
+            watchlist=watchlist,
+            strategies=strategies,
+            report_sections=sections,
+            detail_level=push_mode,
+            schedule=args.schedule,
+            language=args.language,
+        )
+        notified = _send_telegram_messages(token, chat_id, telegram_messages)
         if notified:
-            print("Telegram notification sent.")
+            print(f"Telegram notification sent ({len(telegram_messages)} message(s)).")
         else:
             print("[ERROR] Telegram notification failed.", file=sys.stderr)
             generation_error = generation_error or RuntimeError("Telegram notification failed.")

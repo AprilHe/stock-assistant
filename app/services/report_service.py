@@ -22,7 +22,7 @@ from app.services.research_service import (
 REPORTS_DIR = Path(__file__).resolve().parents[2] / "reports"
 REPORT_SECTION_OPTIONS = ("watchlist", "market", "commodity")
 REPORT_MODE_OPTIONS = ("summary", "ideas", "summary+ideas")
-PUSH_DETAIL_OPTIONS = ("brief", "detailed")
+PUSH_DETAIL_OPTIONS = ("brief", "detailed", "simple", "full")
 
 
 def _normalize_sections(sections: list[str] | None) -> list[str]:
@@ -42,8 +42,10 @@ def _normalize_report_mode(report_mode: str | None) -> str:
 
 def _normalize_push_detail(detail_level: str | None) -> str:
     normalized = (detail_level or "").lower().strip()
-    if normalized in PUSH_DETAIL_OPTIONS:
-        return normalized
+    if normalized in {"simple", "brief"}:
+        return "brief"
+    if normalized in {"full", "detailed"}:
+        return "detailed"
     return "brief"
 
 
@@ -123,6 +125,36 @@ def _watchlist_brief_message(
             return "⚪", "Hold"
         return "🔴", "Reduce"
 
+    def _one_line_watchlist_summary(
+        buy_count: int,
+        hold_count: int,
+        reduce_count: int,
+        *,
+        language: str,
+    ) -> str:
+        total = buy_count + hold_count + reduce_count
+        if total == 0:
+            return (
+                "一句话总结：当前高质量信号不足，先观察，避免勉强交易。"
+                if language == "zh"
+                else "One-line takeaway: setup quality is thin, so stay selective."
+            )
+
+        buy_ratio = buy_count / total
+        reduce_ratio = reduce_count / total
+        if language == "zh":
+            if buy_ratio >= 0.5:
+                return "一句话总结：机会端占优，可小仓位分批试错，优先高评分标的。"
+            if reduce_ratio >= 0.4:
+                return "一句话总结：防守优先，减少追涨，等待趋势与量能共振后再出手。"
+            return "一句话总结：结构中性偏谨慎，优先等待更清晰确认信号。"
+
+        if buy_ratio >= 0.5:
+            return "One-line takeaway: setup quality is improving; scale in gradually on strength."
+        if reduce_ratio >= 0.4:
+            return "One-line takeaway: stay defensive and avoid momentum chasing."
+        return "One-line takeaway: mixed tape; wait for cleaner confirmation."
+
     candidates = []
     for strategy in strategies or ["breakout"]:
         for asset_type in _strategy_asset_types(strategy):
@@ -175,12 +207,24 @@ def _watchlist_brief_message(
         lines = [
             f"{date_str} 决策简报",
             f"> {len(top)}只 | 🟢{counts['buy']} ⚪{counts['hold']} 🔴{counts['reduce']}",
+            _one_line_watchlist_summary(
+                counts["buy"],
+                counts["hold"],
+                counts["reduce"],
+                language="zh",
+            ),
             "",
         ]
     else:
         lines = [
             f"{date_str} Decision Brief",
             f"> {len(top)} symbols | 🟢{counts['buy']} ⚪{counts['hold']} 🔴{counts['reduce']}",
+            _one_line_watchlist_summary(
+                counts["buy"],
+                counts["hold"],
+                counts["reduce"],
+                language="en",
+            ),
             "",
         ]
 

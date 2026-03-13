@@ -229,12 +229,19 @@
               </div>
             </div>
 
-            <div class="grid gap-4 sm:grid-cols-2">
+            <div class="grid gap-4 sm:grid-cols-3">
               <div>
                 <label for="language" class="mb-2 block text-xs uppercase tracking-[0.24em] text-slate-500">Language</label>
                 <select id="language" class="field w-full rounded-2xl px-4 py-3 text-sm">
                   <option value="en">English</option>
                   <option value="zh">Chinese</option>
+                </select>
+              </div>
+              <div>
+                <label for="push-mode" class="mb-2 block text-xs uppercase tracking-[0.24em] text-slate-500">Bot Notification</label>
+                <select id="push-mode" class="field w-full rounded-2xl px-4 py-3 text-sm">
+                  <option value="simple">simple</option>
+                  <option value="full">full doc</option>
                 </select>
               </div>
               <div>
@@ -568,6 +575,8 @@
         document.getElementById("report-mode").value = prefs.report_mode || "summary";
         document.getElementById("schedule").value = prefs.schedule || "weekly";
         document.getElementById("language").value = prefs.language || "en";
+        const savedPushMode = (prefs.push_mode || "simple").toLowerCase();
+        document.getElementById("push-mode").value = savedPushMode === "detailed" ? "full" : (savedPushMode === "brief" ? "simple" : savedPushMode);
         document.getElementById("timezone").value = prefs.timezone || "UTC";
         document.getElementById("push-time").value = formatPushTime(prefs.push_time || "08:00");
         setSelectedStrategies(prefs.strategies || ["breakout"]);
@@ -597,6 +606,7 @@
         report_mode: document.getElementById("report-mode").value,
         schedule: document.getElementById("schedule").value,
         language: document.getElementById("language").value,
+        push_mode: document.getElementById("push-mode").value,
         timezone: document.getElementById("timezone").value.trim(),
         push_time: formatPushTime(normalizedPushTime),
       };
@@ -617,6 +627,8 @@
         document.getElementById("report-mode").value = data.report_mode || payload.report_mode;
         document.getElementById("schedule").value = data.schedule || payload.schedule;
         document.getElementById("language").value = data.language || payload.language;
+        const persistedPushMode = (data.push_mode || payload.push_mode || "simple").toLowerCase();
+        document.getElementById("push-mode").value = persistedPushMode === "detailed" ? "full" : (persistedPushMode === "brief" ? "simple" : persistedPushMode);
         document.getElementById("timezone").value = data.timezone || payload.timezone;
         document.getElementById("push-time").value = formatPushTime(data.push_time || payload.push_time);
         setSelectedStrategies(data.strategies || payload.strategies);

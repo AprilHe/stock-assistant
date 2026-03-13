@@ -41,6 +41,14 @@ on:
         options:
           - "true"
           - "false"
+      notification_mode:
+        description: "Bot notification mode: simple or full"
+        required: false
+        default: "simple"
+        type: choice
+        options:
+          - simple
+          - full
 
 # ─── Environment defaults ────────────────────────────────────────────────────
 # Priority: workflow_dispatch input → repository variable → hard-coded default
@@ -50,6 +58,7 @@ env:
   REPORT_LANGUAGE: ${{ inputs.language || vars.REPORT_LANGUAGE || 'en' }}
   REPORT_SECTIONS: ${{ inputs.sections || vars.REPORT_SECTIONS || 'watchlist,market' }}
   SEND_TELEGRAM: ${{ inputs.send_telegram || 'true' }}
+  BOT_NOTIFICATION_MODE: ${{ inputs.notification_mode || vars.BOT_NOTIFICATION_MODE || 'simple' }}
   LLM_MODEL: ${{ vars.LLM_MODEL || 'gemini/gemini-1.5-flash' }}
 
 # ─── Jobs ────────────────────────────────────────────────────────────────────
@@ -92,6 +101,7 @@ jobs:
           REPORT_LANGUAGE: ${{ env.REPORT_LANGUAGE }}
           REPORT_SECTIONS: ${{ env.REPORT_SECTIONS }}
           SEND_TELEGRAM: ${{ env.SEND_TELEGRAM }}
+          BOT_NOTIFICATION_MODE: ${{ env.BOT_NOTIFICATION_MODE }}
         run: python scripts/run_report.py
 
       # Upload saved report files (.md + .json) as a downloadable artifact

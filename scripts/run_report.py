@@ -26,6 +26,7 @@ Environment variables (set as GitHub Secrets/Variables or in .env):
     REPORT_LANGUAGE        — en or zh (default: en)
     REPORT_SECTIONS        — comma-separated: watchlist,market,commodity (default: watchlist,market)
     SEND_TELEGRAM          — 1/true/yes to enable (default: false)
+    BOT_NOTIFICATION_MODE  — simple or full (legacy: PUSH_MODE brief|detailed)
 """
 
 import argparse
@@ -127,6 +128,12 @@ def _parse_args() -> argparse.Namespace:
         default=os.environ.get("TELEGRAM_CHAT_ID", ""),
         help="Telegram chat/channel ID (overrides TELEGRAM_CHAT_ID env var)",
     )
+    parser.add_argument(
+        "--push-mode",
+        default=os.environ.get("BOT_NOTIFICATION_MODE", os.environ.get("PUSH_MODE", "simple")),
+        choices=["simple", "full", "brief", "detailed"],
+        help="Bot notification mode: simple|full (legacy: brief|detailed)",
+    )
     return parser.parse_args()
 
 
@@ -174,6 +181,7 @@ def main() -> None:
     print(f"  Sections   : {', '.join(sections)}")
     print(f"  Language   : {args.language}")
     print(f"  Telegram   : {'yes' if args.send_telegram else 'no'}")
+    print(f"  Push mode  : {args.push_mode}")
 
     from app.services.report_service import generate_and_save_report
 
@@ -218,12 +226,11 @@ def main() -> None:
         print(f"\nSending sectioned Telegram messages to chat {chat_id}...")
         from app.services.report_service import build_push_messages
 
-        push_mode = os.environ.get("PUSH_MODE", "brief")
         telegram_messages = build_push_messages(
             watchlist=watchlist,
             strategies=strategies,
             report_sections=sections,
-            detail_level=push_mode,
+            detail_level=args.push_mode,
             schedule=args.schedule,
             language=args.language,
         )

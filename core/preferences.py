@@ -12,7 +12,7 @@ Schema per chat_id:
     "timezone": "UTC",          # IANA timezone name
     "push_time": "08:00",       # 24-hour local time for scheduled pushes
     "language": "en",           # "en" or "zh"
-    "push_mode": "brief"        # "brief" | "detailed"
+    "push_mode": "simple"       # "simple" | "full" (legacy: brief | detailed)
 }
 """
 
@@ -33,7 +33,7 @@ REPORT_SECTION_OPTIONS = ("watchlist", "market", "commodity")
 REPORT_MODE_OPTIONS = ("summary", "ideas", "summary+ideas")
 SCHEDULE_OPTIONS = ("daily", "twice", "weekly", "off")
 LANGUAGE_OPTIONS = ("en", "zh")
-PUSH_MODE_OPTIONS = ("brief", "detailed")
+PUSH_MODE_OPTIONS = ("simple", "full")
 
 _TIME_RE = re.compile(r"^\d{1,2}:\d{2}$")
 
@@ -48,7 +48,7 @@ def _default_prefs() -> dict:
         "timezone": "UTC",
         "push_time": "08:00",
         "language": "en",
-        "push_mode": "brief",
+        "push_mode": "simple",
     }
 
 
@@ -57,7 +57,17 @@ def _normalize_prefs(prefs: dict) -> dict:
     defaults = _default_prefs()
     for key, val in defaults.items():
         prefs.setdefault(key, val)
+    prefs["push_mode"] = _normalize_push_mode(prefs.get("push_mode", "simple"))
     return prefs
+
+
+def _normalize_push_mode(push_mode: str | None) -> str:
+    normalized = str(push_mode or "").lower().strip()
+    if normalized in {"simple", "brief"}:
+        return "simple"
+    if normalized in {"full", "detailed"}:
+        return "full"
+    return "simple"
 
 
 def _load() -> dict:
@@ -163,8 +173,9 @@ def set_language(chat_id: str, lang: str) -> bool:
 
 def set_push_mode(chat_id: str, push_mode: str) -> bool:
     """Returns True if push mode is valid and persisted."""
-    normalized = push_mode.lower().strip()
-    if normalized not in PUSH_MODE_OPTIONS:
+    normalized = _normalize_push_mode(push_mode)
+    raw = (push_mode or "").lower().strip()
+    if raw not in {"simple", "full", "brief", "detailed"}:
         return False
     data = _load()
     key = str(chat_id)
@@ -234,7 +245,7 @@ def update_prefs(
     language: str,
     timezone: str,
     push_time: str,
-    push_mode: str = "brief",
+    push_mode: str = "simple",
 ) -> dict:
     """Validates and persists a full preference payload."""
     import pytz
@@ -250,7 +261,7 @@ def update_prefs(
     normalized_language = language.lower().strip()
     normalized_timezone = timezone.strip()
     normalized_push_time = push_time.strip()
-    normalized_push_mode = (push_mode or "brief").lower().strip()
+    normalized_push_mode = _normalize_push_mode(push_mode)
 
     if not normalized_watchlist:
         raise ValueError("watchlist must contain at least one ticker.")
@@ -272,8 +283,8 @@ def update_prefs(
         raise ValueError(f"schedule must be chosen from: {', '.join(SCHEDULE_OPTIONS)}")
     if normalized_language not in LANGUAGE_OPTIONS:
         raise ValueError(f"language must be chosen from: {', '.join(LANGUAGE_OPTIONS)}")
-    if normalized_push_mode not in PUSH_MODE_OPTIONS:
-        raise ValueError(f"push_mode must be chosen from: {', '.join(PUSH_MODE_OPTIONS)}")
+    if str(push_mode or "").lower().strip() not in {"simple", "full", "brief", "detailed"}:
+        raise ValueError("push_mode must be chosen from: simple, full")
     if normalized_timezone not in pytz.all_timezones_set:
         raise ValueError("timezone must be a valid IANA timezone.")
     if not _TIME_RE.match(normalized_push_time):

@@ -52,7 +52,7 @@ def _send_report_for(chat_id: str):
     report_sections = prefs.get("report_sections", ["watchlist"])
     schedule = prefs.get("schedule", "weekly")
     language = prefs.get("language", "en")
-    push_mode = prefs.get("push_mode", "brief")
+    push_mode = prefs.get("push_mode", "simple")
 
     if not watchlist:
         logger.info("Scheduler: skipping %s — empty watchlist", chat_id)

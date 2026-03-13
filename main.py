@@ -69,7 +69,7 @@ class PreferencesUpdateRequest(BaseModel):
     language: str
     timezone: str
     push_time: str
-    push_mode: str = "brief"
+    push_mode: str = "simple"
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────

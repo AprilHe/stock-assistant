@@ -11,7 +11,7 @@ Telegram bot commands:
   /unwatch TICKER     — remove a ticker from your watchlist
   /watchlist          — show your watchlist, schedule, timezone, language
   /sections ...       — choose scheduled bot push sections
-  /pushmode MODE      — scheduled push style: brief | detailed
+  /pushmode MODE      — scheduled push style: simple | full
   /schedule FREQ      — set push frequency: daily | twice | weekly | off
   /timezone ZONE      — set your timezone (e.g. Asia/Shanghai)
   /pushtime HH:MM     — set push time in 24h local time (e.g. 09:30)
@@ -112,7 +112,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /strategy breakout,pullback,commodity_macro\n\n"
         "  /reportmode summary+ideas\n\n"
         "  /sections watchlist,market,commodity\n\n"
-        "  /pushmode brief | detailed\n\n"
+        "  /pushmode simple | full\n\n"
         "Watchlist:\n"
         "  /watch TICKER — add (e.g. /watch AAPL)\n"
         "  /unwatch TICKER — remove\n"
@@ -305,7 +305,7 @@ async def watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     strategies = ", ".join(prefs.get("strategies", ["breakout"]))
     sections = ", ".join(prefs.get("report_sections", ["watchlist"]))
     report_mode = prefs.get("report_mode", "summary")
-    push_mode = prefs.get("push_mode", "brief")
+    push_mode = prefs.get("push_mode", "simple")
     lang_label = "English" if prefs["language"] == "en" else "中文"
     await update.message.reply_text(
         f"📋 Your Watchlist\n{ticker_str}\n\n"
@@ -397,20 +397,22 @@ async def sections_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def pushmode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     prefs = get_prefs(chat_id)
-    current = prefs.get("push_mode", "brief")
+    current = prefs.get("push_mode", "simple")
     if not context.args:
         await update.message.reply_text(
             f"Current push mode: {current}\n\n"
             f"Usage: /pushmode [{' | '.join(PUSH_MODE_OPTIONS)}]\n"
-            "  brief    — concise section-by-section pushes\n"
-            "  detailed — expanded section-by-section pushes"
+            "  simple — concise section-by-section pushes\n"
+            "  full   — expanded section-by-section pushes\n"
+            "  (legacy aliases: brief=simple, detailed=full)"
         )
         return
 
     push_mode = context.args[0].lower()
     ok = set_push_mode(chat_id, push_mode)
     if ok:
-        await update.message.reply_text(f"Push mode updated: {push_mode}")
+        updated_mode = get_prefs(chat_id).get("push_mode", "simple")
+        await update.message.reply_text(f"Push mode updated: {updated_mode}")
     else:
         await update.message.reply_text(
             f"Choose from: {' | '.join(PUSH_MODE_OPTIONS)}"

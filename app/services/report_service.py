@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from app.services.research_service import (
+    DEFAULT_STOCK_UNIVERSE,
     _is_commodity_ticker,
     _strategy_asset_types,
     build_commodity_summary_response,
@@ -64,6 +65,7 @@ def _watchlist_brief_message(
     watchlist: list[str],
     strategies: list[str],
     detail_level: Literal["brief", "detailed"] = "brief",
+    schedule: str = "daily",
     language: str = "en",
 ) -> str:
     candidates = []
@@ -87,9 +89,25 @@ def _watchlist_brief_message(
     top_n = 5 if detail_level == "detailed" else 3
     top = candidates[:top_n]
     if not top:
+        compact = ""
+        try:
+            summary = build_watchlist_summary_response(
+                watchlist=watchlist,
+                schedule=schedule,
+                language=language,
+            ).summary
+            compact = " ".join(summary.strip().split())[:220]
+        except Exception:
+            compact = ""
         if language == "zh":
-            return "自选股摘要\n当前无明显高质量机会，建议耐心等待并控制风险。"
-        return "Watchlist summary\nNo strong watchlist setups right now. Stay selective and manage risk."
+            lines = ["📋 自选股复盘", "当前无明显高质量机会，建议耐心等待并控制风险。"]
+            if compact:
+                lines.append(f"简要背景: {compact}")
+            return "\n".join(lines)
+        lines = ["📋 Watchlist Recap", "No strong watchlist setups right now. Stay selective and manage risk."]
+        if compact:
+            lines.append(f"Context: {compact}")
+        return "\n".join(lines)
 
     if language == "zh":
         lines = ["📋 自选股复盘"]
@@ -118,6 +136,36 @@ def _watchlist_brief_message(
         else:
             lines.extend(["", "3. Strategy Plan", "Positioning: Start small and scale only on confirmation.", "Invalidation: Exit if core setup logic breaks."])
     return "\n".join(lines)
+
+
+def _top_market_stock_ideas(strategies: list[str], top_n: int = 5) -> list[dict]:
+    merged: dict[str, object] = {}
+    for strategy in (strategies or ["breakout"]):
+        try:
+            if "stock" not in _strategy_asset_types(strategy):
+                continue
+            response = build_screen_response(
+                strategy=strategy,
+                asset_type="stock",
+                tickers=DEFAULT_STOCK_UNIVERSE,
+                top_n=top_n,
+            )
+        except Exception:
+            continue
+        for candidate in response.candidates:
+            current = merged.get(candidate.symbol)
+            if current is None:
+                merged[candidate.symbol] = candidate
+                continue
+            if (candidate.score, candidate.confidence) > (current.score, current.confidence):
+                merged[candidate.symbol] = candidate
+
+    ranked = sorted(
+        merged.values(),
+        key=lambda candidate: (candidate.score, candidate.confidence),
+        reverse=True,
+    )
+    return [candidate.model_dump() for candidate in ranked[:top_n]]
 
 
 def _market_brief_message(
@@ -278,6 +326,7 @@ def build_push_messages(
             watchlist,
             strategies,
             detail_level=normalized_detail,
+            schedule=schedule,
             language=language,
         )
     ]
@@ -310,6 +359,7 @@ def build_detailed_report_payload(profile_id: str, prefs: dict) -> dict:
 
     watchlist_summary = ""
     market_summary = ""
+    market_stock_ideas: list[dict] = []
     commodity_summary = ""
 
     strategy_reports = []
@@ -324,6 +374,7 @@ def build_detailed_report_payload(profile_id: str, prefs: dict) -> dict:
         ).summary
     if include_summary and "market" in report_sections:
         market_summary = build_global_summary_response(schedule=schedule, language=language).summary
+        market_stock_ideas = _top_market_stock_ideas(strategies, top_n=5)
     if include_summary and "commodity" in report_sections:
         commodity_summary = build_commodity_summary_response(
             schedule=schedule,
@@ -362,6 +413,7 @@ def build_detailed_report_payload(profile_id: str, prefs: dict) -> dict:
         "sections": {
             "watchlist_summary": watchlist_summary,
             "market_summary": market_summary,
+            "market_stock_ideas": market_stock_ideas,
             "commodity_summary": commodity_summary,
             "strategy_reports": strategy_reports,
         },
@@ -412,6 +464,18 @@ def render_detailed_report_markdown(payload: dict) -> str:
             lines.extend(["", "## Watchlist Summary", sections["watchlist_summary"]])
         if "market" in report_sections and sections.get("market_summary"):
             lines.extend(["", "## US Market Summary", sections["market_summary"]])
+            market_ideas = sections.get("market_stock_ideas") or []
+            lines.extend(["", "## Market Stock Ideas"])
+            if market_ideas:
+                for idx, candidate in enumerate(market_ideas, 1):
+                    evidence = (candidate.get("evidence") or [])
+                    reason = evidence[0] if evidence else candidate.get("entry_logic", "setup confirmation")
+                    lines.append(
+                        f"{idx}. {candidate.get('symbol')} | {candidate.get('strategy')} | "
+                        f"score {candidate.get('score')} | {reason}"
+                    )
+            else:
+                lines.append("No high-conviction market stock setups today.")
         if "commodity" in report_sections and sections.get("commodity_summary"):
             lines.extend(["", "## Commodity Summary", sections["commodity_summary"]])
 

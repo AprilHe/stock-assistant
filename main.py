@@ -69,6 +69,7 @@ class PreferencesUpdateRequest(BaseModel):
     language: str
     timezone: str
     push_time: str
+    push_mode: str = "brief"
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -242,6 +243,7 @@ async def api_update_preferences(profile_id: str, payload: PreferencesUpdateRequ
             language=payload.language,
             timezone=payload.timezone,
             push_time=payload.push_time,
+            push_mode=payload.push_mode,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -23,6 +23,11 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # Module-level scheduler instance so reschedule_user() can reach it
 _scheduler: BackgroundScheduler | None = None
+_TELEGRAM_MAX_CHARS = 4000
+
+
+def _chunk_text(text: str, max_chars: int = _TELEGRAM_MAX_CHARS) -> list[str]:
+    return [text[i:i + max_chars] for i in range(0, len(text), max_chars)] or [""]
 
 
 # ── Report sender ──────────────────────────────────────────────────────────────
@@ -36,6 +41,9 @@ def _send_report_for(chat_id: str):
     watchlist = prefs.get("watchlist", [])
     strategies = prefs.get("strategies", ["breakout"])
     report_sections = prefs.get("report_sections", ["watchlist"])
+    schedule = prefs.get("schedule", "weekly")
+    language = prefs.get("language", "en")
+    push_mode = prefs.get("push_mode", "brief")
 
     if not watchlist:
         logger.info("Scheduler: skipping %s — empty watchlist", chat_id)
@@ -44,12 +52,17 @@ def _send_report_for(chat_id: str):
     logger.info("Scheduler: generating report for %s (%s)", chat_id, watchlist)
 
     try:
-        messages = build_push_messages(
-            watchlist=watchlist,
-            strategies=strategies,
-            report_sections=report_sections,
-        )
-        generate_and_save_report(chat_id, prefs)
+        generated = generate_and_save_report(chat_id, prefs)
+        if push_mode == "detailed":
+            messages = _chunk_text(generated["report"])
+        else:
+            messages = build_push_messages(
+                watchlist=watchlist,
+                strategies=strategies,
+                report_sections=report_sections,
+                schedule=schedule,
+                language=language,
+            )
     except Exception as e:
         logger.error("Scheduler: failed to generate report for %s: %s", chat_id, e)
         messages = [f"Report generation failed: {e}"]

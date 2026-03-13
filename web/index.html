@@ -239,7 +239,15 @@
               </div>
               <div>
                 <label for="push-time" class="mb-2 block text-xs uppercase tracking-[0.24em] text-slate-500">Push Time</label>
-                <input id="push-time" type="time" class="field w-full rounded-2xl px-4 py-3 text-sm" value="08:00" />
+                <input
+                  id="push-time"
+                  type="text"
+                  inputmode="numeric"
+                  class="field w-full rounded-2xl px-4 py-3 text-sm"
+                  value="08:00"
+                  placeholder="14:00"
+                />
+                <p class="mt-2 text-xs text-slate-500">Use 24-hour format: HH:MM (e.g. 08:30, 14:00).</p>
               </div>
             </div>
 
@@ -341,6 +349,26 @@
         sections.unshift("watchlist");
       }
       return Array.from(new Set(sections));
+    }
+
+    function normalizePushTime(raw) {
+      return String(raw || "").trim().replace("：", ":");
+    }
+
+    function isValidPushTime(raw) {
+      const normalized = normalizePushTime(raw);
+      if (!/^\d{1,2}:\d{2}$/.test(normalized)) {
+        return false;
+      }
+      const [hStr, mStr] = normalized.split(":");
+      const h = Number(hStr);
+      const m = Number(mStr);
+      return Number.isInteger(h) && Number.isInteger(m) && h >= 0 && h <= 23 && m >= 0 && m <= 59;
+    }
+
+    function formatPushTime(raw) {
+      const [hStr, mStr] = normalizePushTime(raw).split(":");
+      return `${String(Number(hStr)).padStart(2, "0")}:${mStr}`;
     }
 
     function setSelectedStrategies(strategies) {
@@ -541,7 +569,7 @@
         document.getElementById("schedule").value = prefs.schedule || "weekly";
         document.getElementById("language").value = prefs.language || "en";
         document.getElementById("timezone").value = prefs.timezone || "UTC";
-        document.getElementById("push-time").value = prefs.push_time || "08:00";
+        document.getElementById("push-time").value = formatPushTime(prefs.push_time || "08:00");
         setSelectedStrategies(prefs.strategies || ["breakout"]);
         setSelectedReportSections(prefs.report_sections || ["watchlist"]);
         showPrefsStatus(`Loaded settings for ${profileId}.`, "success");
@@ -554,6 +582,14 @@
     async function savePreferences() {
       const profileId = getProfileId();
       const button = document.getElementById("save-prefs-btn");
+      const pushTimeInput = document.getElementById("push-time");
+      const normalizedPushTime = normalizePushTime(pushTimeInput.value);
+      if (!isValidPushTime(normalizedPushTime)) {
+        showPrefsStatus("Push time must be HH:MM in 24-hour format (e.g. 14:00).", "error");
+        pushTimeInput.focus();
+        return;
+      }
+
       const payload = {
         watchlist: document.getElementById("watchlist-input").value.split(",").map((part) => part.trim()).filter(Boolean),
         strategies: getSelectedStrategies(),
@@ -562,7 +598,7 @@
         schedule: document.getElementById("schedule").value,
         language: document.getElementById("language").value,
         timezone: document.getElementById("timezone").value.trim(),
-        push_time: document.getElementById("push-time").value,
+        push_time: formatPushTime(normalizedPushTime),
       };
 
       button.disabled = true;
@@ -582,7 +618,7 @@
         document.getElementById("schedule").value = data.schedule || payload.schedule;
         document.getElementById("language").value = data.language || payload.language;
         document.getElementById("timezone").value = data.timezone || payload.timezone;
-        document.getElementById("push-time").value = data.push_time || payload.push_time;
+        document.getElementById("push-time").value = formatPushTime(data.push_time || payload.push_time);
         setSelectedStrategies(data.strategies || payload.strategies);
         setSelectedReportSections(data.report_sections || payload.report_sections);
         showPrefsStatus(`Saved settings for ${profileId}.`, "success");

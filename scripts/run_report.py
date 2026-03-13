@@ -43,23 +43,31 @@ load_dotenv()
 _TELEGRAM_MAX_CHARS = 4000  # Telegram API limit is 4096; keep a small margin
 
 
-def _send_telegram(token: str, chat_id: str, text: str) -> None:
+def _send_telegram(token: str, chat_id: str, text: str) -> bool:
     """Send text to a Telegram chat, splitting into chunks if needed."""
     import requests
 
+    ok = True
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     for i in range(0, len(text), _TELEGRAM_MAX_CHARS):
         chunk = text[i : i + _TELEGRAM_MAX_CHARS]
-        resp = requests.post(
-            url,
-            json={"chat_id": chat_id, "text": chunk},
-            timeout=30,
-        )
-        if not resp.ok:
-            print(
-                f"[WARN] Telegram send failed: {resp.status_code} {resp.text}",
-                file=sys.stderr,
+        try:
+            resp = requests.post(
+                url,
+                json={"chat_id": chat_id, "text": chunk},
+                timeout=30,
             )
+            if not resp.ok:
+                ok = False
+                print(
+                    f"[WARN] Telegram send failed: {resp.status_code} {resp.text}",
+                    file=sys.stderr,
+                )
+        except requests.RequestException as exc:
+            ok = False
+            print(f"[WARN] Telegram send failed: {exc}", file=sys.stderr)
+
+    return ok
 
 
 def _write_github_summary(report_md: str, report_id: str) -> None:
@@ -129,6 +137,21 @@ def main() -> None:
         print("[ERROR] Watchlist is empty.", file=sys.stderr)
         sys.exit(1)
 
+    # Validate Telegram credentials early so we fail fast before spending time on report generation
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = args.chat_id or os.environ.get("TELEGRAM_CHAT_ID", "")
+    if args.send_telegram:
+        if not token:
+            print("[ERROR] TELEGRAM_BOT_TOKEN is not set.", file=sys.stderr)
+            sys.exit(1)
+        if not chat_id:
+            print(
+                "[ERROR] TELEGRAM_CHAT_ID is not set (use --chat-id or env var).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(f"[INFO] Telegram delivery enabled → chat {chat_id}")
+
     prefs = {
         "watchlist": watchlist,
         "strategies": strategies,
@@ -150,39 +173,50 @@ def main() -> None:
 
     from app.services.report_service import generate_and_save_report
 
-    result = generate_and_save_report("github-actions", prefs)
-    report_md = result["report"]
-    report_id = result["report_id"]
-    saved_files = result["files"]
+    report_md = None
+    report_id = None
+    generation_error = None
 
-    print(f"\nReport ID  : {report_id}")
-    print(f"Saved MD   : {saved_files['markdown_path']}")
-    print(f"Saved JSON : {saved_files['json_path']}")
+    try:
+        result = generate_and_save_report("github-actions", prefs)
+        report_md = result["report"]
+        report_id = result["report_id"]
+        saved_files = result["files"]
 
-    # Write to GitHub Actions job summary
-    _write_github_summary(report_md, report_id)
+        print(f"\nReport ID  : {report_id}")
+        print(f"Saved MD   : {saved_files['markdown_path']}")
+        print(f"Saved JSON : {saved_files['json_path']}")
 
-    # Print full report to Actions log
-    print("\n" + "=" * 60)
-    print(report_md)
-    print("=" * 60)
+        # Write to GitHub Actions job summary
+        _write_github_summary(report_md, report_id)
+
+        # Print full report to Actions log
+        print("\n" + "=" * 60)
+        print(report_md)
+        print("=" * 60)
+
+    except Exception as exc:
+        generation_error = exc
+        error_msg = f"[ERROR] Report generation failed: {exc}"
+        print(error_msg, file=sys.stderr)
+        if args.send_telegram:
+            print("\nAttempting to send error notification to Telegram...")
+            error_notified = _send_telegram(token, chat_id, f"Stock Assistant report failed:\n{exc}")
+            if not error_notified:
+                print("[WARN] Error notification could not be delivered to Telegram.", file=sys.stderr)
 
     # Telegram delivery
-    if args.send_telegram:
-        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-        chat_id = args.chat_id or os.environ.get("TELEGRAM_CHAT_ID", "")
-        if not token:
-            print("[ERROR] TELEGRAM_BOT_TOKEN is not set.", file=sys.stderr)
-            sys.exit(1)
-        if not chat_id:
-            print(
-                "[ERROR] TELEGRAM_CHAT_ID is not set (use --chat-id or env var).",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+    if args.send_telegram and report_md is not None:
         print(f"\nSending to Telegram chat {chat_id}...")
-        _send_telegram(token, chat_id, report_md)
-        print("Telegram notification sent.")
+        notified = _send_telegram(token, chat_id, report_md)
+        if notified:
+            print("Telegram notification sent.")
+        else:
+            print("[ERROR] Telegram notification failed.", file=sys.stderr)
+            generation_error = generation_error or RuntimeError("Telegram notification failed.")
+
+    if generation_error is not None:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -7,9 +7,9 @@ from datetime import datetime, timezone as dt_tz
 from pathlib import Path
 
 from app.services.research_service import (
-    DEFAULT_COMMODITY_UNIVERSE,
     _is_commodity_ticker,
     _strategy_asset_types,
+    build_commodity_summary_response,
     build_global_summary_response,
     build_screen_response,
     build_watchlist_summary_response,
@@ -18,6 +18,7 @@ from app.services.research_service import (
 
 REPORTS_DIR = Path(__file__).resolve().parents[2] / "reports"
 REPORT_SECTION_OPTIONS = ("watchlist", "market", "commodity")
+REPORT_MODE_OPTIONS = ("summary", "ideas", "summary+ideas")
 
 
 def _normalize_sections(sections: list[str] | None) -> list[str]:
@@ -28,12 +29,20 @@ def _normalize_sections(sections: list[str] | None) -> list[str]:
     return [section for section in deduped if section in REPORT_SECTION_OPTIONS]
 
 
+def _normalize_report_mode(report_mode: str | None) -> str:
+    normalized = (report_mode or "").lower().strip()
+    if normalized in REPORT_MODE_OPTIONS:
+        return normalized
+    return "summary+ideas"
+
+
 def _safe_profile_id(profile_id: str) -> str:
     return "".join(ch for ch in profile_id if ch.isalnum() or ch in {"-", "_", "."}) or "default"
 
 
 def _report_id() -> str:
-    return datetime.now(dt_tz.utc).strftime("%Y%m%dT%H%M%SZ")
+    # Include microseconds to avoid filename collisions in concurrent runs.
+    return datetime.now(dt_tz.utc).strftime("%Y%m%dT%H%M%S%fZ")
 
 
 def _profile_dir(profile_id: str) -> Path:
@@ -42,7 +51,11 @@ def _profile_dir(profile_id: str) -> Path:
     return path
 
 
-def _watchlist_brief_message(watchlist: list[str], strategies: list[str]) -> str:
+def _watchlist_brief_message(
+    watchlist: list[str],
+    strategies: list[str],
+    language: str = "en",
+) -> str:
     candidates = []
     for strategy in strategies or ["breakout"]:
         for asset_type in _strategy_asset_types(strategy):
@@ -63,20 +76,27 @@ def _watchlist_brief_message(watchlist: list[str], strategies: list[str]) -> str
     candidates.sort(key=lambda candidate: (candidate.score, candidate.confidence), reverse=True)
     top = candidates[:3]
     if not top:
+        if language == "zh":
+            return "自选股摘要\n当前无明显高质量机会，建议耐心等待并控制风险。"
         return "Watchlist summary\nNo strong watchlist setups right now. Stay selective and manage risk."
 
-    lines = ["Watchlist summary"]
+    lines = ["自选股摘要" if language == "zh" else "Watchlist summary"]
     for idx, candidate in enumerate(top, 1):
         reason = candidate.evidence[0] if candidate.evidence else candidate.entry_logic
-        risk = candidate.risk_flags[0] if candidate.risk_flags else "none"
-        lines.append(
-            f"{idx}. {candidate.symbol} | {candidate.strategy} | score {candidate.score} | {reason} | risk: {risk}"
-        )
+        risk = candidate.risk_flags[0] if candidate.risk_flags else ("无" if language == "zh" else "none")
+        if language == "zh":
+            lines.append(
+                f"{idx}. {candidate.symbol} | {candidate.strategy} | 评分 {candidate.score} | {reason} | 风险: {risk}"
+            )
+        else:
+            lines.append(
+                f"{idx}. {candidate.symbol} | {candidate.strategy} | score {candidate.score} | {reason} | risk: {risk}"
+            )
     return "\n".join(lines)
 
 
-def _market_brief_message() -> str:
-    snapshot = build_global_summary_response(schedule="daily", language="en").market_data
+def _market_brief_message(schedule: str = "daily", language: str = "en") -> str:
+    snapshot = build_global_summary_response(schedule=schedule, language=language).market_data
     lookup = {point.ticker: point for point in snapshot.values()}
 
     def change_for(ticker: str) -> str:
@@ -95,6 +115,14 @@ def _market_brief_message() -> str:
         elif spx.change_pct < 0 and ndx.change_pct < 0:
             risk_tone = "risk-off"
 
+    if language == "zh":
+        tone_map = {"risk-on": "风险偏好上行", "risk-off": "风险偏好下降", "mixed": "分化"}
+        return (
+            "美股市场摘要\n"
+            f"标普500 {change_for('^GSPC')} | 纳指 {change_for('^IXIC')} | 道指 {change_for('^DJI')}\n"
+            f"黄金 {change_for('GC=F')} | 原油 {change_for('CL=F')} | 比特币 {change_for('BTC-USD')}\n"
+            f"情绪: {tone_map.get(risk_tone, risk_tone)}"
+        )
     return (
         "US market summary\n"
         f"S&P 500 {change_for('^GSPC')} | Nasdaq {change_for('^IXIC')} | Dow {change_for('^DJI')}\n"
@@ -103,35 +131,23 @@ def _market_brief_message() -> str:
     )
 
 
-def _commodity_brief_message() -> str:
-    response = build_screen_response(
-        strategy="commodity_macro",
-        asset_type="commodity",
-        tickers=DEFAULT_COMMODITY_UNIVERSE,
-        top_n=3,
-    )
-    if not response.candidates:
-        return "Commodity summary\nNo strong commodity macro setups right now."
-
-    lines = ["Commodity summary"]
-    for idx, candidate in enumerate(response.candidates, 1):
-        risk = candidate.risk_flags[0] if candidate.risk_flags else "none"
-        reason = candidate.evidence[0] if candidate.evidence else candidate.entry_logic
-        lines.append(f"{idx}. {candidate.symbol} | score {candidate.score} | {reason} | risk: {risk}")
-    return "\n".join(lines)
+def _commodity_brief_message(schedule: str = "daily", language: str = "en") -> str:
+    return build_commodity_summary_response(schedule=schedule, language=language).summary
 
 
 def build_push_messages(
     watchlist: list[str],
     strategies: list[str],
     report_sections: list[str] | None,
+    schedule: str = "daily",
+    language: str = "en",
 ) -> list[str]:
     sections = _normalize_sections(report_sections)
-    messages = [_watchlist_brief_message(watchlist, strategies)]
+    messages = [_watchlist_brief_message(watchlist, strategies, language=language)]
     if "market" in sections:
-        messages.append(_market_brief_message())
+        messages.append(_market_brief_message(schedule=schedule, language=language))
     if "commodity" in sections:
-        messages.append(_commodity_brief_message())
+        messages.append(_commodity_brief_message(schedule=schedule, language=language))
     return messages
 
 
@@ -140,38 +156,48 @@ def build_detailed_report_payload(profile_id: str, prefs: dict) -> dict:
     strategies = prefs.get("strategies", ["breakout"])
     schedule = prefs.get("schedule", "weekly")
     language = prefs.get("language", "en")
+    report_sections = _normalize_sections(prefs.get("report_sections", ["watchlist"]))
+    report_mode = _normalize_report_mode(prefs.get("report_mode", "summary+ideas"))
 
-    watchlist_summary = build_watchlist_summary_response(
-        watchlist=watchlist,
-        schedule=schedule,
-        language=language,
-    ).summary
-    market_summary = build_global_summary_response(schedule=schedule, language=language).summary
+    watchlist_summary = ""
+    market_summary = ""
+    commodity_summary = ""
 
     strategy_reports = []
-    for strategy in strategies:
-        for asset_type in _strategy_asset_types(strategy):
-            strategy_watchlist = [
-                symbol for symbol in watchlist
-                if _is_commodity_ticker(symbol) == (asset_type == "commodity")
-            ]
-            if not strategy_watchlist:
-                continue
-            strategy_reports.append(
-                build_screen_response(
-                    strategy=strategy,
-                    asset_type=asset_type,
-                    tickers=strategy_watchlist,
-                    top_n=5,
-                ).model_dump()
-            )
+    include_summary = report_mode in {"summary", "summary+ideas"}
+    include_ideas = report_mode in {"ideas", "summary+ideas"}
 
-    commodity_summary = build_screen_response(
-        strategy="commodity_macro",
-        asset_type="commodity",
-        tickers=DEFAULT_COMMODITY_UNIVERSE,
-        top_n=5,
-    ).model_dump()
+    if include_summary and "watchlist" in report_sections:
+        watchlist_summary = build_watchlist_summary_response(
+            watchlist=watchlist,
+            schedule=schedule,
+            language=language,
+        ).summary
+    if include_summary and "market" in report_sections:
+        market_summary = build_global_summary_response(schedule=schedule, language=language).summary
+    if include_summary and "commodity" in report_sections:
+        commodity_summary = build_commodity_summary_response(
+            schedule=schedule,
+            language=language,
+        ).summary
+
+    if include_ideas:
+        for strategy in strategies:
+            for asset_type in _strategy_asset_types(strategy):
+                strategy_watchlist = [
+                    symbol for symbol in watchlist
+                    if _is_commodity_ticker(symbol) == (asset_type == "commodity")
+                ]
+                if not strategy_watchlist:
+                    continue
+                strategy_reports.append(
+                    build_screen_response(
+                        strategy=strategy,
+                        asset_type=asset_type,
+                        tickers=strategy_watchlist,
+                        top_n=5,
+                    ).model_dump()
+                )
 
     created_at = datetime.now(dt_tz.utc).isoformat()
     report_id = _report_id()
@@ -180,6 +206,10 @@ def build_detailed_report_payload(profile_id: str, prefs: dict) -> dict:
         "profile_id": profile_id,
         "created_at": created_at,
         "preferences": prefs,
+        "report_config": {
+            "report_mode": report_mode,
+            "report_sections": report_sections,
+        },
         "sections": {
             "watchlist_summary": watchlist_summary,
             "market_summary": market_summary,
@@ -191,30 +221,60 @@ def build_detailed_report_payload(profile_id: str, prefs: dict) -> dict:
 
 def render_detailed_report_markdown(payload: dict) -> str:
     sections = payload["sections"]
+    config = payload.get("report_config", {})
+    report_sections_raw = config.get("report_sections")
+    if report_sections_raw is None:
+        inferred_sections = []
+        if sections.get("watchlist_summary"):
+            inferred_sections.append("watchlist")
+        if sections.get("market_summary"):
+            inferred_sections.append("market")
+        if sections.get("commodity_summary"):
+            inferred_sections.append("commodity")
+        report_sections = _normalize_sections(inferred_sections)
+    else:
+        report_sections = _normalize_sections(report_sections_raw)
+
+    report_mode_raw = config.get("report_mode")
+    if report_mode_raw is None:
+        has_summary = bool(
+            sections.get("watchlist_summary")
+            or sections.get("market_summary")
+            or sections.get("commodity_summary")
+        )
+        has_ideas = bool(sections.get("strategy_reports"))
+        if has_summary and has_ideas:
+            report_mode = "summary+ideas"
+        elif has_ideas:
+            report_mode = "ideas"
+        else:
+            report_mode = "summary"
+    else:
+        report_mode = _normalize_report_mode(report_mode_raw)
     lines = [
         f"# Stock Assistant Report",
         "",
         f"- Profile: {payload['profile_id']}",
         f"- Generated: {payload['created_at']}",
-        "",
-        "## Watchlist Summary",
-        sections["watchlist_summary"],
-        "",
-        "## US Market Summary",
-        sections["market_summary"],
-        "",
-        "## Commodity Summary",
-        format_screen_response_obj(sections["commodity_summary"]),
     ]
 
-    for report in sections["strategy_reports"]:
-        lines.extend(
-            [
-                "",
-                f"## Strategy: {report['strategy']}",
-                format_screen_response_obj(report),
-            ]
-        )
+    if report_mode in {"summary", "summary+ideas"}:
+        if "watchlist" in report_sections and sections.get("watchlist_summary"):
+            lines.extend(["", "## Watchlist Summary", sections["watchlist_summary"]])
+        if "market" in report_sections and sections.get("market_summary"):
+            lines.extend(["", "## US Market Summary", sections["market_summary"]])
+        if "commodity" in report_sections and sections.get("commodity_summary"):
+            lines.extend(["", "## Commodity Summary", sections["commodity_summary"]])
+
+    if report_mode in {"ideas", "summary+ideas"}:
+        for report in sections.get("strategy_reports", []):
+            lines.extend(
+                [
+                    "",
+                    f"## Strategy: {report['strategy']}",
+                    format_screen_response_obj(report),
+                ]
+            )
     return "\n".join(lines).strip() + "\n"
 
 

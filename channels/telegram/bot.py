@@ -3,6 +3,7 @@ channels/telegram/bot.py
 Telegram bot commands:
   /start              — welcome + help
   /report             — AI dashboard for your watchlist right now
+  /fullreport         — full saved report markdown for your watchlist
   /summary            — global market summary (AI-generated)
   /analyze TICKER     — AI analysis of a specific stock
   /ideas              — ranked breakout ideas (watchlist universe)
@@ -10,6 +11,7 @@ Telegram bot commands:
   /unwatch TICKER     — remove a ticker from your watchlist
   /watchlist          — show your watchlist, schedule, timezone, language
   /sections ...       — choose scheduled bot push sections
+  /pushmode MODE      — scheduled push style: brief | detailed
   /schedule FREQ      — set push frequency: daily | twice | weekly | off
   /timezone ZONE      — set your timezone (e.g. Asia/Shanghai)
   /pushtime HH:MM     — set push time in 24h local time (e.g. 09:30)
@@ -27,7 +29,8 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from core.preferences import (
     get_prefs, add_ticker, remove_ticker,
     set_schedule, set_timezone, set_push_time, set_language, set_strategies, set_report_mode,
-    set_report_sections, REPORT_MODE_OPTIONS, REPORT_SECTION_OPTIONS, SCHEDULE_OPTIONS, STRATEGY_OPTIONS,
+    set_report_sections, set_push_mode,
+    REPORT_MODE_OPTIONS, REPORT_SECTION_OPTIONS, SCHEDULE_OPTIONS, STRATEGY_OPTIONS, PUSH_MODE_OPTIONS,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,6 +44,11 @@ SCHEDULE_LABELS = {
 
 
 # ── Commands ───────────────────────────────────────────────────────────────────
+_TELEGRAM_MAX_CHARS = 4000
+
+
+def _chunk_text(text: str, max_chars: int = _TELEGRAM_MAX_CHARS) -> list[str]:
+    return [text[i:i + max_chars] for i in range(0, len(text), max_chars)] or [""]
 
 
 def _parse_ideas_args(args: list[str]) -> tuple[str, str, int]:
@@ -80,6 +88,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Welcome to Stock Assistant!\n\n"
         "On-demand:\n"
         "  /report — AI dashboard for your watchlist\n"
+        "  /fullreport — full detailed markdown report\n"
         "  /summary — global market overview\n"
         "  /analyze TICKER — deep-dive on any stock\n\n"
         "  /ideas [strategy] [asset_type] [top_n]\n"
@@ -87,6 +96,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /strategy breakout,pullback,commodity_macro\n\n"
         "  /reportmode summary+ideas\n\n"
         "  /sections watchlist,market,commodity\n\n"
+        "  /pushmode brief | detailed\n\n"
         "Watchlist:\n"
         "  /watch TICKER — add (e.g. /watch AAPL)\n"
         "  /unwatch TICKER — remove\n"
@@ -150,6 +160,27 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error("/summary failed: %s", e)
         await update.message.reply_text(f"Error generating summary: {e}")
+
+
+async def fullreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Generate and send a full detailed report markdown."""
+    chat_id = str(update.effective_chat.id)
+    prefs = get_prefs(chat_id)
+    watchlist = prefs["watchlist"]
+    if not watchlist:
+        await update.message.reply_text("Your watchlist is empty. Add tickers with /watch TICKER.")
+        return
+
+    await update.message.reply_text("Generating full report...")
+    try:
+        from app.services.report_service import generate_and_save_report
+
+        generated = generate_and_save_report(chat_id, prefs)
+        for chunk in _chunk_text(generated["report"]):
+            await update.message.reply_text(chunk)
+    except Exception as e:
+        logger.error("/fullreport failed for %s: %s", chat_id, e)
+        await update.message.reply_text(f"Error generating full report: {e}")
 
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -257,16 +288,18 @@ async def watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     strategies = ", ".join(prefs.get("strategies", ["breakout"]))
     sections = ", ".join(prefs.get("report_sections", ["watchlist"]))
     report_mode = prefs.get("report_mode", "summary")
+    push_mode = prefs.get("push_mode", "brief")
     lang_label = "English" if prefs["language"] == "en" else "中文"
     await update.message.reply_text(
         f"📋 Your Watchlist\n{ticker_str}\n\n"
         f"🧠 Strategies: {strategies}\n"
         f"📨 Bot sections: {sections}\n"
+        f"📬 Push mode: {push_mode}\n"
         f"📰 Report mode: {report_mode}\n"
         f"📅 Schedule: {SCHEDULE_LABELS[prefs['schedule']]}\n"
         f"🕐 Push time: {prefs['push_time']} ({prefs['timezone']})\n"
         f"🌐 Language: {lang_label}\n\n"
-        "Change with /strategy | /sections | /reportmode | /schedule | /timezone | /pushtime | /language"
+        "Change with /strategy | /sections | /pushmode | /reportmode | /schedule | /timezone | /pushtime | /language"
     )
 
 
@@ -341,6 +374,29 @@ async def sections_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(
             f"Choose from: {', '.join(REPORT_SECTION_OPTIONS)}"
+        )
+
+
+async def pushmode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    prefs = get_prefs(chat_id)
+    current = prefs.get("push_mode", "brief")
+    if not context.args:
+        await update.message.reply_text(
+            f"Current push mode: {current}\n\n"
+            f"Usage: /pushmode [{' | '.join(PUSH_MODE_OPTIONS)}]\n"
+            "  brief    — short scheduled messages\n"
+            "  detailed — scheduled full markdown report"
+        )
+        return
+
+    push_mode = context.args[0].lower()
+    ok = set_push_mode(chat_id, push_mode)
+    if ok:
+        await update.message.reply_text(f"Push mode updated: {push_mode}")
+    else:
+        await update.message.reply_text(
+            f"Choose from: {' | '.join(PUSH_MODE_OPTIONS)}"
         )
 
 
@@ -465,6 +521,7 @@ def run_bot(token: str):
         app = ApplicationBuilder().token(token).build()
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("report", report))
+        app.add_handler(CommandHandler("fullreport", fullreport))
         app.add_handler(CommandHandler("summary", summary))
         app.add_handler(CommandHandler("analyze", analyze))
         app.add_handler(CommandHandler("ideas", ideas))
@@ -474,6 +531,7 @@ def run_bot(token: str):
         app.add_handler(CommandHandler("strategy", strategy_cmd))
         app.add_handler(CommandHandler("reportmode", reportmode_cmd))
         app.add_handler(CommandHandler("sections", sections_cmd))
+        app.add_handler(CommandHandler("pushmode", pushmode_cmd))
         app.add_handler(CommandHandler("schedule", schedule_cmd))
         app.add_handler(CommandHandler("timezone", timezone_cmd))
         app.add_handler(CommandHandler("pushtime", pushtime_cmd))

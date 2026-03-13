@@ -269,6 +269,262 @@ Output only the JSON object, nothing else."""
     return _render_dashboard(raw, market_data, generated_at, schedule, language) + DISCLAIMER
 
 
+def generate_us_market_narrative(
+    market_data: dict,
+    news: list,
+    schedule: str = "daily",
+    language: str = "en",
+) -> str:
+    """
+    Generates a structured narrative US market review (similar to a daily 大盘复盘).
+    Uses extended market data (indices + sector ETFs + VIX) for richer context.
+    Returns a Markdown-formatted report string.
+    """
+    # Build price table lines
+    price_lines = []
+    for name, data in market_data.items():
+        if data.get("error"):
+            price_lines.append(f"  {name} ({data.get('ticker', '')}): data unavailable")
+        else:
+            direction = "▲" if (data.get("change_pct") or 0) >= 0 else "▼"
+            price_lines.append(
+                f"  {name} ({data.get('ticker', '')}): {data.get('price', 'n/a')}"
+                f"  {direction}{abs(data.get('change_pct', 0)):.2f}%"
+            )
+
+    news_lines = []
+    for i, article in enumerate(news[:5], 1):
+        age = _news_age_label(article.get("published_at", ""), language)
+        news_lines.append(f"  {i}. {age} {article['title']}")
+
+    date_str = datetime.now(dt_tz.utc).strftime("%Y-%m-%d")
+
+    if language == "zh":
+        prompt = f"""你是一位专业的美股市场分析师。根据以下市场数据和新闻，撰写一份当日美股大盘复盘报告。
+
+日期：{date_str}
+
+市场数据（主要指数 + 板块ETF + VIX）：
+{chr(10).join(price_lines)}
+
+近期新闻（48小时内）：
+{chr(10).join(news_lines) if news_lines else "  暂无新闻"}
+
+请用中文输出以下结构的Markdown报告（直接输出Markdown，不要代码块围栏）：
+
+🎯 美股大盘复盘
+
+{date_str} 大盘复盘
+
+一、市场总结 📈
+[2-3句话概括今日整体市场表现、风险偏好、成交量特征]
+
+二、指数点评 📊
+[分析标普500、纳斯达克、道琼斯、罗素2000的表现，说明领涨/领跌原因]
+
+| 指数 | 最新价 | 涨跌幅 |
+|------|--------|--------|
+[根据数据填入各指数行]
+
+三、板块热点 🚀
+[列出涨幅前3和跌幅前3的板块ETF，简析背后逻辑]
+
+> 🔥 领涨板块: [板块(涨跌幅)] | ...
+> 💧 领跌板块: [板块(涨跌幅)] | ...
+
+四、资金动向与风险偏好 💰
+[基于VIX水平、防御vs进攻板块对比，分析市场风险情绪]
+
+五、后市展望 🔭
+[基于当前技术面和情绪，给出1-3日短期方向判断]
+
+六、风险提示 ⚠️
+[列出2-3个需关注的关键风险]
+
+七、策略建议 📝
+- 核心判断：[进攻/防守/中性]
+- 仓位建议：[XX成仓]
+- 操作指引：[简要操作思路]
+
+建议仅供参考，不构成投资建议。"""
+    else:
+        prompt = f"""You are a professional US equity market analyst. Based on the market data and news below, write a structured daily US market review.
+
+Date: {date_str}
+
+Market Data (major indices + sector ETFs + VIX):
+{chr(10).join(price_lines)}
+
+Recent News (past 48h):
+{chr(10).join(news_lines) if news_lines else "  No recent news."}
+
+Output a Markdown report with the following sections (output raw Markdown, no code fences):
+
+🎯 US Market Daily Review
+
+{date_str} Market Recap
+
+I. Market Overview 📈
+[2-3 sentences summarizing overall market tone, risk appetite, breadth]
+
+II. Index Commentary 📊
+[Analysis of S&P 500, Nasdaq, Dow Jones, Russell 2000 performance and key drivers]
+
+| Index | Price | Change |
+|-------|-------|--------|
+[Fill in each index row from the data]
+
+III. Sector Highlights 🚀
+[Top 3 and bottom 3 sector ETFs with % change and brief rationale]
+
+> 🔥 Leading: [Sector (+X.XX%)] | ...
+> 💧 Lagging: [Sector (-X.XX%)] | ...
+
+IV. Risk Tone & Capital Flows 💰
+[Risk-on vs risk-off analysis based on VIX level, defensive vs growth sector rotation, safe-haven demand]
+
+V. Outlook 🔭
+[Short-term 1-3 day directional view based on technicals and sentiment]
+
+VI. Risk Warning ⚠️
+[2-3 key risks to monitor]
+
+VII. Strategy Note 📝
+- Stance: [Offensive / Defensive / Neutral]
+- Position guidance: [XX% invested]
+- Action: [Brief tactical note]
+
+For informational purposes only. Not financial advice."""
+
+    generated_at = datetime.now(dt_tz.utc)
+    raw = _call_llm(prompt)
+    # Strip accidental markdown fences
+    cleaned = (
+        raw.strip()
+        .removeprefix("```markdown")
+        .removeprefix("```md")
+        .removeprefix("```")
+        .removesuffix("```")
+        .strip()
+    )
+    return cleaned + "\n\n" + _validity_note(schedule, generated_at, language)
+
+
+def generate_commodity_narrative(
+    market_data: dict,
+    news: list,
+    schedule: str = "daily",
+    language: str = "en",
+) -> str:
+    """
+    Generates a structured narrative commodity market review.
+    Always shows data for major commodities regardless of screening signals.
+    Returns a Markdown-formatted report string.
+    """
+    price_lines = []
+    for name, data in market_data.items():
+        if data.get("error"):
+            price_lines.append(f"  {name} ({data.get('ticker', '')}): data unavailable")
+        else:
+            direction = "▲" if (data.get("change_pct") or 0) >= 0 else "▼"
+            price_lines.append(
+                f"  {name} ({data.get('ticker', '')}): {data.get('price', 'n/a')}"
+                f"  {direction}{abs(data.get('change_pct', 0)):.2f}%"
+            )
+
+    news_lines = []
+    for i, article in enumerate(news[:5], 1):
+        age = _news_age_label(article.get("published_at", ""), language)
+        news_lines.append(f"  {i}. {age} {article['title']}")
+
+    date_str = datetime.now(dt_tz.utc).strftime("%Y-%m-%d")
+
+    if language == "zh":
+        prompt = f"""你是一位专业的大宗商品市场分析师。根据以下价格数据和新闻，撰写当日大宗商品市场综述。
+
+日期：{date_str}
+
+商品价格数据：
+{chr(10).join(price_lines)}
+
+近期新闻（48小时内）：
+{chr(10).join(news_lines) if news_lines else "  暂无新闻"}
+
+请用中文输出以下结构的Markdown报告（直接输出Markdown，不要代码块围栏）：
+
+🌐 大宗商品市场综述
+
+{date_str} 商品市场复盘
+
+一、整体概况 📊
+[2-3句话概括今日大宗商品市场整体表现和宏观背景]
+
+二、主要商品行情 💹
+
+| 商品 | 最新价 | 涨跌幅 | 简评 |
+|------|--------|--------|------|
+[根据数据填入黄金、白银、WTI原油、天然气、铜的行情和一句话点评]
+
+三、核心驱动因素 🔍
+[分析影响今日商品市场的主要宏观因素：美元走势、利率、地缘政治、供需关系]
+
+四、后市展望 🔭
+[对商品大类整体方向给出短期判断]
+
+五、风险提示 ⚠️
+[列出2-3个需关注的风险点]
+
+建议仅供参考，不构成投资建议。"""
+    else:
+        prompt = f"""You are a professional commodity market analyst. Based on the price data and news below, write a structured commodity market daily review.
+
+Date: {date_str}
+
+Commodity Price Data:
+{chr(10).join(price_lines)}
+
+Recent News (past 48h):
+{chr(10).join(news_lines) if news_lines else "  No recent news."}
+
+Output a Markdown report with the following sections (output raw Markdown, no code fences):
+
+🌐 Commodity Market Review
+
+{date_str} Commodity Recap
+
+I. Overview 📊
+[2-3 sentences summarizing overall commodity market tone and macro backdrop]
+
+II. Commodity Breakdown 💹
+
+| Commodity | Price | Change | Note |
+|-----------|-------|--------|------|
+[Fill in Gold, Silver, WTI Oil, Natural Gas, Copper with price, change%, and one-line note]
+
+III. Key Drivers 🔍
+[Macro factors driving today's commodity moves: USD strength, rates, geopolitics, supply/demand]
+
+IV. Outlook 🔭
+[Short-term directional bias for the commodity complex]
+
+V. Risk Warning ⚠️
+[2-3 key risks to monitor]
+
+For informational purposes only. Not financial advice."""
+
+    generated_at = datetime.now(dt_tz.utc)
+    raw = _call_llm(prompt)
+    cleaned = (
+        raw.strip()
+        .removeprefix("```markdown")
+        .removeprefix("```md")
+        .removeprefix("```")
+        .removesuffix("```")
+        .strip()
+    )
+    return cleaned + "\n\n" + _validity_note(schedule, generated_at, language)
+
+
 def _clean_json_text(raw: str) -> str:
     return (
         raw.strip()

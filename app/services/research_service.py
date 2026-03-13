@@ -15,10 +15,17 @@ from core.strategy_registry import (
 )
 from core.ai_analysis import (
     analyze_ticker_structured,
+    generate_commodity_narrative,
     generate_market_summary,
+    generate_us_market_narrative,
     render_ticker_analysis_text,
 )
-from core.market_data import get_market_snapshot, get_snapshot_for
+from core.market_data import (
+    get_commodity_snapshot,
+    get_market_snapshot,
+    get_snapshot_for,
+    get_us_market_extended_snapshot,
+)
 from core.news import get_market_news
 from domain.schemas.research import (
     BacktestResponse,
@@ -127,9 +134,22 @@ def build_market_snapshot_response() -> MarketSnapshotResponse:
 
 
 def build_global_summary_response(schedule: str = "daily", language: str = "en") -> SummaryResponse:
-    raw_market_data = get_market_snapshot()
+    raw_market_data = get_us_market_extended_snapshot()
     news = get_market_news()
-    summary = generate_market_summary(raw_market_data, news, schedule=schedule, language=language)
+    summary = generate_us_market_narrative(raw_market_data, news, schedule=schedule, language=language)
+    return SummaryResponse(
+        summary=summary,
+        market_data=_to_market_points(raw_market_data),
+        schedule=schedule,
+        language=language,
+        requested_tickers=[],
+    )
+
+
+def build_commodity_summary_response(schedule: str = "daily", language: str = "en") -> SummaryResponse:
+    raw_market_data = get_commodity_snapshot()
+    news = get_market_news(query="commodities gold oil silver copper natural gas")
+    summary = generate_commodity_narrative(raw_market_data, news, schedule=schedule, language=language)
     return SummaryResponse(
         summary=summary,
         market_data=_to_market_points(raw_market_data),

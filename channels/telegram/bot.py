@@ -51,6 +51,21 @@ def _chunk_text(text: str, max_chars: int = _TELEGRAM_MAX_CHARS) -> list[str]:
     return [text[i:i + max_chars] for i in range(0, len(text), max_chars)] or [""]
 
 
+def _log_chat_id(update: Update, source: str) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat:
+        return
+    logger.info(
+        "Telegram update via /%s: chat_id=%s chat_type=%s user_id=%s username=%s",
+        source,
+        chat.id,
+        chat.type,
+        user.id if user else "n/a",
+        user.username if user else "n/a",
+    )
+
+
 def _parse_ideas_args(args: list[str]) -> tuple[str, str, int]:
     strategy = "breakout"
     asset_type = "stock"
@@ -82,6 +97,7 @@ def _parse_sections_args(args: list[str]) -> list[str]:
     return list(dict.fromkeys(sections))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _log_chat_id(update, "start")
     chat_id = str(update.effective_chat.id)
     prefs = get_prefs(chat_id)
     await update.message.reply_text(
@@ -115,6 +131,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """AI decision dashboard for the user's personal watchlist."""
+    _log_chat_id(update, "report")
     chat_id = str(update.effective_chat.id)
     prefs = get_prefs(chat_id)
     watchlist = prefs["watchlist"]
@@ -385,8 +402,8 @@ async def pushmode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"Current push mode: {current}\n\n"
             f"Usage: /pushmode [{' | '.join(PUSH_MODE_OPTIONS)}]\n"
-            "  brief    — short scheduled messages\n"
-            "  detailed — scheduled full markdown report"
+            "  brief    — concise section-by-section pushes\n"
+            "  detailed — expanded section-by-section pushes"
         )
         return
 

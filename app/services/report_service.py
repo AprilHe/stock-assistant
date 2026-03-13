@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone as dt_tz
 from pathlib import Path
+from typing import Literal
 
 from app.services.research_service import (
     _is_commodity_ticker,
@@ -19,6 +20,7 @@ from app.services.research_service import (
 REPORTS_DIR = Path(__file__).resolve().parents[2] / "reports"
 REPORT_SECTION_OPTIONS = ("watchlist", "market", "commodity")
 REPORT_MODE_OPTIONS = ("summary", "ideas", "summary+ideas")
+PUSH_DETAIL_OPTIONS = ("brief", "detailed")
 
 
 def _normalize_sections(sections: list[str] | None) -> list[str]:
@@ -34,6 +36,13 @@ def _normalize_report_mode(report_mode: str | None) -> str:
     if normalized in REPORT_MODE_OPTIONS:
         return normalized
     return "summary+ideas"
+
+
+def _normalize_push_detail(detail_level: str | None) -> str:
+    normalized = (detail_level or "").lower().strip()
+    if normalized in PUSH_DETAIL_OPTIONS:
+        return normalized
+    return "brief"
 
 
 def _safe_profile_id(profile_id: str) -> str:
@@ -54,6 +63,7 @@ def _profile_dir(profile_id: str) -> Path:
 def _watchlist_brief_message(
     watchlist: list[str],
     strategies: list[str],
+    detail_level: Literal["brief", "detailed"] = "brief",
     language: str = "en",
 ) -> str:
     candidates = []
@@ -74,29 +84,144 @@ def _watchlist_brief_message(
             candidates.extend(response.candidates)
 
     candidates.sort(key=lambda candidate: (candidate.score, candidate.confidence), reverse=True)
-    top = candidates[:3]
+    top_n = 5 if detail_level == "detailed" else 3
+    top = candidates[:top_n]
     if not top:
         if language == "zh":
             return "自选股摘要\n当前无明显高质量机会，建议耐心等待并控制风险。"
         return "Watchlist summary\nNo strong watchlist setups right now. Stay selective and manage risk."
 
-    lines = ["自选股摘要" if language == "zh" else "Watchlist summary"]
+    if language == "zh":
+        lines = ["📋 自选股复盘"]
+        if detail_level == "detailed":
+            lines.extend(["1. Setup Summary", f"共扫描 {len(watchlist)} 个标的，筛出 {len(top)} 个高分机会。", "", "2. Top Setups"])
+    else:
+        lines = ["📋 Watchlist Recap"]
+        if detail_level == "detailed":
+            lines.extend(["1. Setup Summary", f"Scanned {len(watchlist)} symbols; selected {len(top)} high-score setups.", "", "2. Top Setups"])
+
     for idx, candidate in enumerate(top, 1):
         reason = candidate.evidence[0] if candidate.evidence else candidate.entry_logic
         risk = candidate.risk_flags[0] if candidate.risk_flags else ("无" if language == "zh" else "none")
         if language == "zh":
             lines.append(
-                f"{idx}. {candidate.symbol} | {candidate.strategy} | 评分 {candidate.score} | {reason} | 风险: {risk}"
+                f"{idx}. {candidate.symbol} | {candidate.strategy} | 评分 {candidate.score} | {reason} | 风险提示: {risk}"
             )
         else:
             lines.append(
                 f"{idx}. {candidate.symbol} | {candidate.strategy} | score {candidate.score} | {reason} | risk: {risk}"
             )
+
+    if detail_level == "detailed":
+        if language == "zh":
+            lines.extend(["", "3. Strategy Plan", "仓位建议: 分批小仓位试错，优先高评分标的。", "失效条件: 核心入场逻辑被破坏或波动急剧放大。"])
+        else:
+            lines.extend(["", "3. Strategy Plan", "Positioning: Start small and scale only on confirmation.", "Invalidation: Exit if core setup logic breaks."])
     return "\n".join(lines)
 
 
-def _market_brief_message(schedule: str = "daily", language: str = "en") -> str:
+def _market_brief_message(
+    detail_level: Literal["brief", "detailed"] = "brief",
+    schedule: str = "daily",
+    language: str = "en",
+) -> str:
     snapshot = build_global_summary_response(schedule=schedule, language=language).market_data
+    lookup = {point.ticker: point for point in snapshot.values()}
+
+    def _change_value(ticker: str) -> float | None:
+        point = lookup.get(ticker)
+        if not point or point.change_pct is None:
+            return None
+        return float(point.change_pct)
+
+    def change_for(ticker: str) -> str:
+        change = _change_value(ticker)
+        if change is None:
+            return "n/a"
+        sign = "+" if change >= 0 else "-"
+        return f"{sign}{abs(change):.1f}%"
+
+    spx_chg = _change_value("^GSPC")
+    ndx_chg = _change_value("^IXIC")
+    vix_chg = _change_value("^VIX")
+    risk_tone = "mixed"
+    if spx_chg is not None and ndx_chg is not None:
+        if spx_chg > 0 and ndx_chg > 0:
+            risk_tone = "risk-on"
+        elif spx_chg < 0 and ndx_chg < 0:
+            risk_tone = "risk-off"
+
+    if detail_level == "brief":
+        if language == "zh":
+            tone_map = {"risk-on": "风险偏好上行", "risk-off": "风险偏好下降", "mixed": "分化"}
+            return (
+                "🎯 大盘复盘\n"
+                f"标普500 {change_for('^GSPC')} | 纳指 {change_for('^IXIC')} | 道指 {change_for('^DJI')}\n"
+                f"黄金 {change_for('GC=F')} | 原油 {change_for('CL=F')} | 比特币 {change_for('BTC-USD')}\n"
+                f"市场情绪: {tone_map.get(risk_tone, risk_tone)}"
+            )
+        return (
+            "🎯 US Market Recap\n"
+            f"S&P 500 {change_for('^GSPC')} | Nasdaq {change_for('^IXIC')} | Dow {change_for('^DJI')}\n"
+            f"Gold {change_for('GC=F')} | Oil {change_for('CL=F')} | Bitcoin {change_for('BTC-USD')}\n"
+            f"Tone: {risk_tone}"
+        )
+
+    if language == "zh":
+        tone_map = {"risk-on": "风险偏好上行", "risk-off": "风险偏好下降", "mixed": "分化"}
+        stance = "Risk-off" if risk_tone == "risk-off" else ("Risk-on" if risk_tone == "risk-on" else "中性")
+        vix_signal = "波动上行" if (vix_chg is not None and vix_chg > 0) else "波动可控"
+        return (
+            "🎯 大盘复盘\n\n"
+            f"{datetime.now(dt_tz.utc).strftime('%Y-%m-%d')} US Market Recap\n\n"
+            "1. Market Summary\n"
+            f"美股三大指数整体表现为 {tone_map.get(risk_tone, risk_tone)}，资金偏谨慎。\n\n"
+            "2. Index Commentary\n"
+            f"S&P 500 {change_for('^GSPC')} | Nasdaq {change_for('^IXIC')} | Dow {change_for('^DJI')} | VIX {change_for('^VIX')}。\n\n"
+            "3. Outlook\n"
+            "短线以波动驱动为主，建议等待确认信号再加仓。\n\n"
+            "4. Risk Alerts\n"
+            f"- 波动信号: {vix_signal}\n"
+            "- 若指数同步转弱，需防止回撤扩大。\n\n"
+            "5. Strategy Plan\n"
+            f"- Stance: {stance}\n"
+            "- Position Sizing: 控制仓位，分批执行。\n"
+            "- Invalidation Trigger: 标普与纳指同步转强且VIX回落。"
+        )
+
+    stance = "Risk-off" if risk_tone == "risk-off" else ("Risk-on" if risk_tone == "risk-on" else "Neutral")
+    return (
+        "🎯 US Market Recap\n\n"
+        f"{datetime.now(dt_tz.utc).strftime('%Y-%m-%d')} US Market Recap\n\n"
+        "1. Market Summary\n"
+        f"US majors are showing a {risk_tone} tape with cautious risk appetite.\n\n"
+        "2. Index Commentary\n"
+        f"S&P 500 {change_for('^GSPC')} | Nasdaq {change_for('^IXIC')} | Dow {change_for('^DJI')} | VIX {change_for('^VIX')}.\n\n"
+        "3. Outlook\n"
+        "Near-term direction remains headline and volatility driven.\n\n"
+        "4. Risk Alerts\n"
+        f"- VIX signal: {'elevated' if (vix_chg is not None and vix_chg > 0) else 'contained'}\n"
+        "- Broad index weakness would confirm risk-off continuation.\n\n"
+        "5. Strategy Plan\n"
+        f"- Stance: {stance}\n"
+        "- Position Sizing: keep size small and scale on confirmation.\n"
+        "- Invalidation Trigger: S&P/Nasdaq regain trend with softer VIX."
+    )
+
+
+def _commodity_brief_message(
+    detail_level: Literal["brief", "detailed"] = "brief",
+    schedule: str = "daily",
+    language: str = "en",
+) -> str:
+    summary = build_commodity_summary_response(schedule=schedule, language=language)
+    candidates = build_screen_response(
+        strategy="commodity_macro",
+        asset_type="commodity",
+        tickers=None,
+        top_n=3 if detail_level == "brief" else 5,
+    ).candidates
+    snapshot = summary.market_data
     lookup = {point.ticker: point for point in snapshot.values()}
 
     def change_for(ticker: str) -> str:
@@ -106,48 +231,72 @@ def _market_brief_message(schedule: str = "daily", language: str = "en") -> str:
         sign = "+" if point.change_pct >= 0 else "-"
         return f"{sign}{abs(point.change_pct):.1f}%"
 
-    spx = lookup.get("^GSPC")
-    ndx = lookup.get("^IXIC")
-    risk_tone = "mixed"
-    if spx and ndx and spx.change_pct is not None and ndx.change_pct is not None:
-        if spx.change_pct > 0 and ndx.change_pct > 0:
-            risk_tone = "risk-on"
-        elif spx.change_pct < 0 and ndx.change_pct < 0:
-            risk_tone = "risk-off"
-
     if language == "zh":
-        tone_map = {"risk-on": "风险偏好上行", "risk-off": "风险偏好下降", "mixed": "分化"}
-        return (
-            "美股市场摘要\n"
-            f"标普500 {change_for('^GSPC')} | 纳指 {change_for('^IXIC')} | 道指 {change_for('^DJI')}\n"
-            f"黄金 {change_for('GC=F')} | 原油 {change_for('CL=F')} | 比特币 {change_for('BTC-USD')}\n"
-            f"情绪: {tone_map.get(risk_tone, risk_tone)}"
-        )
-    return (
-        "US market summary\n"
-        f"S&P 500 {change_for('^GSPC')} | Nasdaq {change_for('^IXIC')} | Dow {change_for('^DJI')}\n"
-        f"Gold {change_for('GC=F')} | Oil {change_for('CL=F')} | Bitcoin {change_for('BTC-USD')}\n"
-        f"Tone: {risk_tone}"
-    )
+        lines = [
+            "🛢 商品复盘",
+            f"黄金 {change_for('GC=F')} | 原油 {change_for('CL=F')} | 白银 {change_for('SI=F')} | 铜 {change_for('HG=F')}",
+        ]
+        if detail_level == "detailed":
+            lines.extend(["", "1. Market Summary", summary.summary[:220], "", "2. Top Commodity Setups"])
+        else:
+            lines.extend(["", "重点机会:"])
+        if not candidates:
+            lines.append("- 暂无高质量商品机会。")
+        for idx, candidate in enumerate(candidates, 1):
+            reason = candidate.evidence[0] if candidate.evidence else candidate.entry_logic
+            lines.append(f"{idx}. {candidate.symbol} | 评分 {candidate.score} | {reason}")
+        return "\n".join(lines)
 
-
-def _commodity_brief_message(schedule: str = "daily", language: str = "en") -> str:
-    return build_commodity_summary_response(schedule=schedule, language=language).summary
+    lines = [
+        "🛢 Commodity Recap",
+        f"Gold {change_for('GC=F')} | Oil {change_for('CL=F')} | Silver {change_for('SI=F')} | Copper {change_for('HG=F')}",
+    ]
+    if detail_level == "detailed":
+        lines.extend(["", "1. Market Summary", summary.summary[:220], "", "2. Top Commodity Setups"])
+    else:
+        lines.extend(["", "Top ideas:"])
+    if not candidates:
+        lines.append("- No strong commodity setups right now.")
+    for idx, candidate in enumerate(candidates, 1):
+        reason = candidate.evidence[0] if candidate.evidence else candidate.entry_logic
+        lines.append(f"{idx}. {candidate.symbol} | score {candidate.score} | {reason}")
+    return "\n".join(lines)
 
 
 def build_push_messages(
     watchlist: list[str],
     strategies: list[str],
     report_sections: list[str] | None,
+    detail_level: str = "brief",
     schedule: str = "daily",
     language: str = "en",
 ) -> list[str]:
     sections = _normalize_sections(report_sections)
-    messages = [_watchlist_brief_message(watchlist, strategies, language=language)]
+    normalized_detail = _normalize_push_detail(detail_level)
+    messages = [
+        _watchlist_brief_message(
+            watchlist,
+            strategies,
+            detail_level=normalized_detail,
+            language=language,
+        )
+    ]
     if "market" in sections:
-        messages.append(_market_brief_message(schedule=schedule, language=language))
+        messages.append(
+            _market_brief_message(
+                detail_level=normalized_detail,
+                schedule=schedule,
+                language=language,
+            )
+        )
     if "commodity" in sections:
-        messages.append(_commodity_brief_message(schedule=schedule, language=language))
+        messages.append(
+            _commodity_brief_message(
+                detail_level=normalized_detail,
+                schedule=schedule,
+                language=language,
+            )
+        )
     return messages
 
 

@@ -12,7 +12,7 @@ AI-powered market analysis that delivers pre-market reports and trade ideas ever
 4. [Option B — Web Dashboard & API Server](#option-b--web-dashboard--api-server)
 5. [Option C — Telegram Bot (interactive)](#option-c--telegram-bot-interactive)
 6. [Option D — CLI / Cron](#option-d--cli--cron)
-7. [Environment Setup (local only)](#environment-setup-local-only)
+7. [Environment Setup (Local, One-Time for B/C/D)](#environment-setup-local-only)
 8. [API Reference](#api-reference)
 9. [Telegram Bot Commands](#telegram-bot-commands)
 10. [Strategies](#strategies)
@@ -35,11 +35,12 @@ AI-powered market analysis that delivers pre-market reports and trade ideas ever
 
 ## Start Here
 
-Choose a run option first.
+Choose a run path first:
 
-- If you want the easiest setup, use **Option A: GitHub Actions**. You can configure notifications and report settings entirely in the GitHub web UI.
-- If you want a browser dashboard or interactive bot, use **Option B/C** and then do **Environment Setup**.
-- If you want terminal or cron usage, use **Option D** and then do **Environment Setup**.
+1. **Option A (GitHub Actions)** — no local Python setup required.
+2. **Option B/C/D (local run modes)** — complete **Environment Setup** once, then use any/all of B, C, D.
+
+Quick rule: `Environment Setup` applies to **B/C/D only**, and it is one-time.
 
 ## Option A — GitHub Actions (default, no local setup)
 
@@ -130,8 +131,6 @@ schedule:
 
 A local server with a browser UI and full REST API. Also activates scheduled Telegram pushes and the interactive Telegram bot.
 
-**Requires:** [Local setup](#local-setup) first.
-
 ```bash
 cd stock-assistant
 python main.py
@@ -146,13 +145,15 @@ The server also starts:
 - **APScheduler** — runs per-user scheduled Telegram pushes
 - **Telegram bot** — starts polling if `TELEGRAM_BOT_TOKEN` is set
 
+To prevent duplicate Telegram notifications when GitHub Actions is your primary sender, set:
+- `DISABLE_BOT_SCHEDULED_PUSH=true`
+This keeps the bot interactive while disabling all local APScheduler push delivery.
+
 ---
 
 ## Option C — Telegram Bot (interactive)
 
 A conversational bot you can message any time to get on-demand reports and manage your watchlist.
-
-**Requires:** The web server running (Option B). The bot starts automatically.
 
 **Setup:**
 1. Message `@BotFather` → `/newbot` → copy the token into `TELEGRAM_BOT_TOKEN` in `.env`
@@ -184,8 +185,6 @@ See all bot commands in the [Telegram Bot Commands](#telegram-bot-commands) sect
 ## Option D — CLI / Cron
 
 Generate a report from the terminal — no server required. Useful for scheduled tasks or quick spot-checks.
-
-**Requires:** [Local setup](#local-setup) first.
 
 ```bash
 cd stock-assistant
@@ -229,7 +228,7 @@ Reports are saved to `reports/github-actions/<report_id>.md` and `.json`.
 
 ## Environment Setup (local only)
 
-Required for Options B, C, and D.
+One-time setup for Options **B/C/D**.
 
 ### 1. Create the virtual environment
 
@@ -262,6 +261,10 @@ NEWS_API_KEY=your_key_here
 # Telegram (optional)
 TELEGRAM_BOT_TOKEN=your_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
+
+# Optional guard: disable local bot scheduled pushes
+# Use this when GitHub Actions already sends your daily report
+DISABLE_BOT_SCHEDULED_PUSH=true
 ```
 
 ### 3. Smoke-test the core modules

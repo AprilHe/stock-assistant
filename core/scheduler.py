@@ -23,17 +23,26 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # Module-level scheduler instance so reschedule_user() can reach it
 _scheduler: BackgroundScheduler | None = None
-_TELEGRAM_MAX_CHARS = 4000
 
 
-def _chunk_text(text: str, max_chars: int = _TELEGRAM_MAX_CHARS) -> list[str]:
-    return [text[i:i + max_chars] for i in range(0, len(text), max_chars)] or [""]
+def _env_truthy(raw: str | None) -> bool:
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+DISABLE_BOT_SCHEDULED_PUSH = _env_truthy(os.getenv("DISABLE_BOT_SCHEDULED_PUSH"))
 
 
 # ── Report sender ──────────────────────────────────────────────────────────────
 
 def _send_report_for(chat_id: str):
     """Generate and send a watchlist report to a single user."""
+    if DISABLE_BOT_SCHEDULED_PUSH:
+        logger.info(
+            "Scheduler: global guard enabled (DISABLE_BOT_SCHEDULED_PUSH=true), skip send for %s",
+            chat_id,
+        )
+        return
+
     from core.preferences import get_prefs
     from app.services.report_service import build_push_messages, generate_and_save_report
 
@@ -52,17 +61,15 @@ def _send_report_for(chat_id: str):
     logger.info("Scheduler: generating report for %s (%s)", chat_id, watchlist)
 
     try:
-        generated = generate_and_save_report(chat_id, prefs)
-        if push_mode == "detailed":
-            messages = _chunk_text(generated["report"])
-        else:
-            messages = build_push_messages(
-                watchlist=watchlist,
-                strategies=strategies,
-                report_sections=report_sections,
-                schedule=schedule,
-                language=language,
-            )
+        generate_and_save_report(chat_id, prefs)
+        messages = build_push_messages(
+            watchlist=watchlist,
+            strategies=strategies,
+            report_sections=report_sections,
+            detail_level=push_mode,
+            schedule=schedule,
+            language=language,
+        )
     except Exception as e:
         logger.error("Scheduler: failed to generate report for %s: %s", chat_id, e)
         messages = [f"Report generation failed: {e}"]
@@ -99,6 +106,9 @@ def _remove_user_jobs(chat_id: str):
 
 def _add_user_jobs(chat_id: str, schedule: str):
     if not _scheduler:
+        return
+    if DISABLE_BOT_SCHEDULED_PUSH:
+        _remove_user_jobs(chat_id)
         return
 
     _remove_user_jobs(chat_id)
@@ -170,6 +180,12 @@ def create_scheduler() -> BackgroundScheduler:
     """
     global _scheduler
     _scheduler = BackgroundScheduler(timezone=pytz.utc)
+
+    if DISABLE_BOT_SCHEDULED_PUSH:
+        logger.warning(
+            "Scheduler: DISABLE_BOT_SCHEDULED_PUSH=true, bot-scheduled pushes are globally disabled."
+        )
+        return _scheduler
 
     from core.preferences import all_users
     for chat_id, prefs in all_users().items():

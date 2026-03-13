@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone as dt_tz
 from pathlib import Path
 from typing import Literal
@@ -100,21 +101,41 @@ def _watchlist_brief_message(
         except Exception:
             compact = ""
         if language == "zh":
-            lines = ["📋 自选股复盘", "当前无明显高质量机会，建议耐心等待并控制风险。"]
+            lines = ["📋 自选股复盘", "市场总结: 结构偏震荡，优先等待高把握信号。", "风险总结: 当前信号不足，避免追涨。"]
             if compact:
                 lines.append(f"简要背景: {compact}")
             return "\n".join(lines)
-        lines = ["📋 Watchlist Recap", "No strong watchlist setups right now. Stay selective and manage risk."]
+        lines = [
+            "📋 Watchlist Recap",
+            "Market message: tape is mixed, so wait for cleaner confirmation.",
+            "Risk message: setup quality is thin; avoid forced entries.",
+        ]
         if compact:
             lines.append(f"Context: {compact}")
         return "\n".join(lines)
 
+    avg_score = sum(candidate.score for candidate in top) / len(top)
+    risk_flags = [
+        risk
+        for candidate in top
+        for risk in (candidate.risk_flags or [])
+    ]
+    risk_preview = risk_flags[0] if risk_flags else ("波动风险可控" if language == "zh" else "volatility risk is manageable")
+
     if language == "zh":
-        lines = ["📋 自选股复盘"]
+        lines = [
+            "📋 自选股复盘",
+            f"市场总结: 共发现 {len(top)} 个候选，平均评分 {avg_score:.1f}，结构偏机会驱动。",
+            f"风险总结: 主要风险为 {risk_preview}。",
+        ]
         if detail_level == "detailed":
             lines.extend(["1. Setup Summary", f"共扫描 {len(watchlist)} 个标的，筛出 {len(top)} 个高分机会。", "", "2. Top Setups"])
     else:
-        lines = ["📋 Watchlist Recap"]
+        lines = [
+            "📋 Watchlist Recap",
+            f"Market message: found {len(top)} actionable setups with avg score {avg_score:.1f}.",
+            f"Risk message: primary risk is {risk_preview}.",
+        ]
         if detail_level == "detailed":
             lines.extend(["1. Setup Summary", f"Scanned {len(watchlist)} symbols; selected {len(top)} high-score setups.", "", "2. Top Setups"])
 
@@ -170,6 +191,7 @@ def _top_market_stock_ideas(strategies: list[str], top_n: int = 5) -> list[dict]
 
 def _market_brief_message(
     detail_level: Literal["brief", "detailed"] = "brief",
+    strategies: list[str] | None = None,
     schedule: str = "daily",
     language: str = "en",
 ) -> str:
@@ -180,7 +202,10 @@ def _market_brief_message(
         point = lookup.get(ticker)
         if not point or point.change_pct is None:
             return None
-        return float(point.change_pct)
+        value = float(point.change_pct)
+        if math.isnan(value):
+            return None
+        return value
 
     def change_for(ticker: str) -> str:
         change = _change_value(ticker)
@@ -200,19 +225,81 @@ def _market_brief_message(
             risk_tone = "risk-off"
 
     if detail_level == "brief":
+        date_str = datetime.now(dt_tz.utc).strftime("%Y-%m-%d")
+        sector_map = {
+            "Utilities": "XLU",
+            "Financials": "XLF",
+            "Real Estate": "XLRE",
+            "Technology": "XLK",
+            "Industrials": "XLI",
+            "Materials": "XLB",
+            "Energy": "XLE",
+        }
+        sector_moves = []
+        for name, ticker in sector_map.items():
+            val = _change_value(ticker)
+            if val is None:
+                continue
+            sector_moves.append((name, val))
+        leaders = ", ".join(name for name, _ in sorted(sector_moves, key=lambda x: x[1], reverse=True)[:3]) or "n/a"
+        laggards = ", ".join(name for name, _ in sorted(sector_moves, key=lambda x: x[1])[:2]) or "n/a"
+
+        idea = _top_market_stock_ideas(strategies or ["breakout"], top_n=1)
+        stock_idea_line = "n/a"
+        if idea:
+            top = idea[0]
+            ev = (top.get("evidence") or [])
+            reason = ev[0] if ev else top.get("entry_logic", "setup confirmation")
+            stock_idea_line = f"{top.get('symbol')} | {top.get('strategy')} | Score {top.get('score')} | {reason}"
+
         if language == "zh":
-            tone_map = {"risk-on": "风险偏好上行", "risk-off": "风险偏好下降", "mixed": "分化"}
+            tone_map = {"risk-on": "偏风险偏好", "risk-off": "偏防御", "mixed": "中性偏谨慎"}
             return (
-                "🎯 大盘复盘\n"
-                f"标普500 {change_for('^GSPC')} | 纳指 {change_for('^IXIC')} | 道指 {change_for('^DJI')}\n"
-                f"黄金 {change_for('GC=F')} | 原油 {change_for('CL=F')} | 比特币 {change_for('BTC-USD')}\n"
-                f"市场情绪: {tone_map.get(risk_tone, risk_tone)}"
+                f"US Market Daily Review | {date_str}\n\n"
+                "Market Snapshot\n"
+                f"美股情绪 {tone_map.get(risk_tone, risk_tone)}，VIX {change_for('^VIX')}。\n\n"
+                "Index Moves\n"
+                f"- S&P 500: {change_for('^GSPC')}\n"
+                f"- Nasdaq: {change_for('^IXIC')}\n"
+                f"- Dow Jones: {change_for('^DJI')}\n"
+                f"- Russell 2000: {change_for('^RUT')}\n"
+                f"- VIX: {change_for('^VIX')}\n\n"
+                "Sector Watch\n"
+                f"- Leaders: {leaders}\n"
+                f"- Laggards: {laggards}\n\n"
+                "Risk Tone\n"
+                f"- Tone: {tone_map.get(risk_tone, risk_tone)}\n"
+                "- 关注收益率与宏观数据扰动。\n\n"
+                "Strategy View\n"
+                f"- Stance: {'Neutral-Offensive' if risk_tone != 'risk-off' else 'Neutral-Defensive'}\n"
+                "- Suggested exposure: 60-70%\n\n"
+                "Stock Idea\n"
+                f"- {stock_idea_line}"
             )
+
         return (
-            "🎯 US Market Recap\n"
-            f"S&P 500 {change_for('^GSPC')} | Nasdaq {change_for('^IXIC')} | Dow {change_for('^DJI')}\n"
-            f"Gold {change_for('GC=F')} | Oil {change_for('CL=F')} | Bitcoin {change_for('BTC-USD')}\n"
-            f"Tone: {risk_tone}"
+            f"US Market Daily Review | {date_str}\n\n"
+            "Market Snapshot\n"
+            f"US majors closed {risk_tone}; VIX {change_for('^VIX')} indicates the current volatility regime.\n\n"
+            "Index Moves\n"
+            f"- S&P 500: {change_for('^GSPC')}\n"
+            f"- Nasdaq: {change_for('^IXIC')}\n"
+            f"- Dow Jones: {change_for('^DJI')}\n"
+            f"- Russell 2000: {change_for('^RUT')}\n"
+            f"- VIX: {change_for('^VIX')}\n\n"
+            "Sector Watch\n"
+            f"- Leaders: {leaders}\n"
+            f"- Laggards: {laggards}\n\n"
+            "Risk Tone\n"
+            f"- Tone: {risk_tone}\n"
+            "- Watch rates, Fed commentary, and macro data.\n\n"
+            "Near-Term Outlook (1–3 days)\n"
+            "- Bias: cautiously constructive unless breadth weakens.\n\n"
+            "Strategy View\n"
+            f"- Stance: {'Neutral-Offensive' if risk_tone != 'risk-off' else 'Neutral-Defensive'}\n"
+            "- Suggested exposure: ~70%\n\n"
+            "Stock Idea\n"
+            f"- {stock_idea_line}"
         )
 
     if language == "zh":
@@ -334,6 +421,7 @@ def build_push_messages(
         messages.append(
             _market_brief_message(
                 detail_level=normalized_detail,
+                strategies=strategies,
                 schedule=schedule,
                 language=language,
             )

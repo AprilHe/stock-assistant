@@ -9,6 +9,7 @@ rendered from a JSON response from the LLM.
 
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone as dt_tz
 
 import yfinance as yf
@@ -19,7 +20,49 @@ from core.news import get_market_news
 
 load_dotenv()
 
-LLM_MODEL = os.getenv("LLM_MODEL", "gemini/gemini-1.5-flash")
+# ── LLM model resolution ──────────────────────────────────────────────────────
+
+# Default models per provider (current, supported)
+_PROVIDER_DEFAULTS = {
+    "ANTHROPIC_API_KEY": "claude-haiku-4-5-20251001",
+    "OPENAI_API_KEY": "gpt-4o-mini",
+    "GEMINI_API_KEY": "gemini/gemini-2.0-flash",
+    "GROQ_API_KEY": "groq/llama-3.3-70b-versatile",
+}
+
+
+def _resolve_llm_model() -> str:
+    """Return the LLM model to use.
+
+    Priority:
+    1. Explicit LLM_MODEL env var (user override).
+    2. First API key found in env → provider default model.
+    3. Hard fallback with a warning.
+    """
+    explicit = os.getenv("LLM_MODEL", "").strip()
+    if explicit:
+        return explicit
+    for key_name, model in _PROVIDER_DEFAULTS.items():
+        if os.getenv(key_name):
+            return model
+    import warnings
+    warnings.warn(
+        "No LLM API key found. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, "
+        "or GROQ_API_KEY. Falling back to gemini/gemini-2.0-flash.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    return "gemini/gemini-2.0-flash"
+
+
+LLM_MODEL = _resolve_llm_model()
+
+# ── Rate-limit guard ───────────────────────────────────────────────────────────
+# Free-tier limits (RPM):  Gemini Flash ≈15  |  Groq ≈30  |  others vary.
+# Set LLM_REQUEST_DELAY_S=4 in .env when using a free-tier provider to stay
+# safely under the per-minute cap.  Defaults to 0 (no delay) for paid tiers.
+_LLM_DELAY_S: float = float(os.getenv("LLM_REQUEST_DELAY_S", "0"))
+_last_llm_call: float = 0.0
 
 DISCLAIMER = (
     "\n\n⚠️ For informational purposes only. "
@@ -35,11 +78,22 @@ _VALIDITY_HOURS = {"daily": 24, "twice": 12, "weekly": 168, "off": 24}
 # ── LLM call ──────────────────────────────────────────────────────────────────
 
 def _call_llm(prompt: str) -> str:
-    """Calls the configured LLM and returns the text response."""
+    """Calls the configured LLM and returns the text response.
+
+    Enforces a minimum gap of LLM_REQUEST_DELAY_S seconds between calls so
+    free-tier providers (Gemini, Groq) don't hit their RPM limit.
+    """
+    global _last_llm_call
+    if _LLM_DELAY_S > 0:
+        elapsed = time.monotonic() - _last_llm_call
+        wait = _LLM_DELAY_S - elapsed
+        if wait > 0:
+            time.sleep(wait)
     response = completion(
         model=LLM_MODEL,
         messages=[{"role": "user", "content": prompt}],
     )
+    _last_llm_call = time.monotonic()
     return response.choices[0].message.content.strip()
 
 

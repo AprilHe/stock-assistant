@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import datetime, timezone as dt_tz
+from datetime import datetime, timedelta, timezone as dt_tz
 from pathlib import Path
 from typing import Literal
 
+from core.market_data import get_snapshot_for
 from app.services.research_service import (
     DEFAULT_STOCK_UNIVERSE,
     _is_commodity_ticker,
@@ -18,11 +19,535 @@ from app.services.research_service import (
     build_watchlist_summary_response,
     format_screen_response,
 )
+from domain.schemas.report import (
+    FeaturedIdeaReport,
+    FeaturedSectorIdea,
+    FeaturedStockIdea,
+    MarketOverviewReport,
+    PricePlan,
+    WatchlistReportItem,
+    WatchlistSummaryReport,
+)
 
 REPORTS_DIR = Path(__file__).resolve().parents[2] / "reports"
 REPORT_SECTION_OPTIONS = ("watchlist", "market", "commodity")
 REPORT_MODE_OPTIONS = ("summary", "ideas", "summary+ideas")
 PUSH_DETAIL_OPTIONS = ("brief", "detailed", "simple", "full")
+
+
+def _score_to_action(score: int) -> str:
+    if score >= 65:
+        return "buy"
+    if score >= 45:
+        return "hold"
+    return "reduce"
+
+
+def _score_to_confidence(score: int) -> str:
+    if score >= 75:
+        return "high"
+    if score >= 55:
+        return "medium"
+    return "low"
+
+
+def _iso_valid_until(days_ahead: int = 3) -> str:
+    return (
+        (datetime.now(dt_tz.utc) + timedelta(days=days_ahead))
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _strategy_id_from_candidate(candidate) -> str:
+    return str(getattr(candidate, "strategy", "") or getattr(candidate, "strategy_id", "")).strip().lower()
+
+
+def _recent_price_context(symbol: str) -> dict[str, float] | None:
+    try:
+        import yfinance as yf
+
+        df = yf.Ticker(symbol).history(period="9mo", interval="1d")
+        if df.empty or len(df) < 30:
+            return None
+        close = df["Close"]
+        high = df["High"]
+        low = df["Low"]
+        sma20 = close.rolling(20).mean()
+        sma50 = close.rolling(50).mean()
+        std20 = close.rolling(20).std()
+        latest = float(close.iloc[-1])
+        context = {
+            "latest": latest,
+            "sma20": float(sma20.iloc[-1]) if not math.isnan(float(sma20.iloc[-1])) else latest,
+            "sma50": float(sma50.iloc[-1]) if not math.isnan(float(sma50.iloc[-1])) else latest,
+            "upper20": float(high.iloc[-21:-1].max()) if len(high) >= 21 else latest,
+            "lower10": float(low.iloc[-11:-1].min()) if len(low) >= 11 else latest,
+            "lower_band": float((sma20 - 2 * std20).iloc[-1]) if len(std20) else latest,
+            "upper_band": float((sma20 + 2 * std20).iloc[-1]) if len(std20) else latest,
+        }
+        return context
+    except Exception:
+        return None
+
+
+def _generic_price_plan(candidate, last_price: float | None) -> PricePlan:
+    if last_price is None or last_price <= 0:
+        return PricePlan(
+            entry_range="n/a",
+            ideal_entry=None,
+            take_profit_zone="n/a",
+            stop_loss_or_invalidation=candidate.exit_logic or "n/a",
+            valid_until=_iso_valid_until(),
+            invalidate_if=[candidate.exit_logic] if candidate.exit_logic else [],
+        )
+
+    action = _score_to_action(candidate.score)
+    if action == "buy":
+        low = round(last_price * 0.99, 2)
+        high = round(last_price * 1.01, 2)
+        take_profit_low = round(last_price * 1.05, 2)
+        take_profit_high = round(last_price * 1.08, 2)
+        stop = round(last_price * 0.97, 2)
+    elif action == "hold":
+        low = round(last_price * 0.985, 2)
+        high = round(last_price * 1.005, 2)
+        take_profit_low = round(last_price * 1.03, 2)
+        take_profit_high = round(last_price * 1.05, 2)
+        stop = round(last_price * 0.965, 2)
+    else:
+        low = round(last_price * 0.995, 2)
+        high = round(last_price * 1.015, 2)
+        take_profit_low = round(last_price * 0.94, 2)
+        take_profit_high = round(last_price * 0.97, 2)
+        stop = round(last_price * 1.03, 2)
+
+    return PricePlan(
+        entry_range=f"{low}-{high}",
+        ideal_entry=round((low + high) / 2, 2),
+        take_profit_zone=f"{take_profit_low}-{take_profit_high}",
+        stop_loss_or_invalidation=f"close beyond {stop}",
+        valid_until=_iso_valid_until(),
+        invalidate_if=[candidate.exit_logic] if candidate.exit_logic else [],
+    )
+
+
+def _price_plan_from_candidate(candidate, last_price: float | None) -> PricePlan:
+    if last_price is None or last_price <= 0:
+        return _generic_price_plan(candidate, last_price)
+
+    strategy_id = _strategy_id_from_candidate(candidate)
+    context = _recent_price_context(getattr(candidate, "symbol", "") or getattr(candidate, "ticker", ""))
+    if not context:
+        return _generic_price_plan(candidate, last_price)
+
+    latest = context["latest"]
+    sma20 = context["sma20"]
+    sma50 = context["sma50"]
+    upper20 = context["upper20"]
+    lower10 = context["lower10"]
+    lower_band = context["lower_band"]
+    upper_band = context["upper_band"]
+    invalidate = [candidate.exit_logic] if candidate.exit_logic else []
+
+    if strategy_id in {"breakout", "donchian_breakout"}:
+        trigger = upper20
+        entry_low = round(min(trigger * 0.995, latest), 2)
+        entry_high = round(max(trigger * 1.01, latest), 2)
+        ideal = round((trigger + latest) / 2, 2)
+        stop = round(sma20 if strategy_id == "breakout" else lower10, 2)
+        tp_low = round(latest * 1.05, 2)
+        tp_high = round(latest * 1.09, 2)
+        return PricePlan(
+            entry_range=f"{entry_low}-{entry_high}",
+            ideal_entry=ideal,
+            take_profit_zone=f"{tp_low}-{tp_high}",
+            stop_loss_or_invalidation=f"close below {stop}",
+            valid_until=_iso_valid_until(3),
+            invalidate_if=invalidate,
+        )
+
+    if strategy_id in {"pullback", "trend_following"}:
+        anchor = sma20 if strategy_id == "pullback" else max(sma20, sma50)
+        entry_low = round(anchor * 0.99, 2)
+        entry_high = round(anchor * 1.01, 2)
+        stop = round(sma50 * 0.99, 2)
+        tp_low = round(latest * 1.04, 2)
+        tp_high = round(latest * 1.07, 2)
+        return PricePlan(
+            entry_range=f"{entry_low}-{entry_high}",
+            ideal_entry=round(anchor, 2),
+            take_profit_zone=f"{tp_low}-{tp_high}",
+            stop_loss_or_invalidation=f"close below {stop}",
+            valid_until=_iso_valid_until(4),
+            invalidate_if=invalidate,
+        )
+
+    if strategy_id == "mean_reversion":
+        entry_low = round(min(lower_band, latest) * 0.995, 2)
+        entry_high = round(max(lower_band, latest) * 1.005, 2)
+        stop = round(min(lower_band, latest) * 0.97, 2)
+        tp_low = round(sma20 * 0.99, 2)
+        tp_high = round(min(upper_band, sma20 * 1.03), 2)
+        return PricePlan(
+            entry_range=f"{entry_low}-{entry_high}",
+            ideal_entry=round((entry_low + entry_high) / 2, 2),
+            take_profit_zone=f"{tp_low}-{tp_high}",
+            stop_loss_or_invalidation=f"close below {stop}",
+            valid_until=_iso_valid_until(2),
+            invalidate_if=invalidate,
+        )
+
+    if strategy_id == "commodity_macro":
+        anchor = sma20
+        entry_low = round(anchor * 0.99, 2)
+        entry_high = round(max(anchor * 1.015, latest), 2)
+        stop = round(sma20 * 0.97, 2)
+        tp_low = round(latest * 1.05, 2)
+        tp_high = round(latest * 1.1, 2)
+        return PricePlan(
+            entry_range=f"{entry_low}-{entry_high}",
+            ideal_entry=round(anchor, 2),
+            take_profit_zone=f"{tp_low}-{tp_high}",
+            stop_loss_or_invalidation=f"close below {stop}",
+            valid_until=_iso_valid_until(5),
+            invalidate_if=invalidate,
+        )
+
+    return _generic_price_plan(candidate, last_price)
+
+
+def build_structured_watchlist_report(
+    watchlist: list[str],
+    strategies: list[str],
+    top_n: int = 5,
+) -> WatchlistSummaryReport:
+    generated_at = datetime.now(dt_tz.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    candidates = []
+    for strategy in strategies or ["breakout"]:
+        for asset_type in _strategy_asset_types(strategy):
+            scoped_watchlist = [
+                symbol for symbol in watchlist
+                if _is_commodity_ticker(symbol) == (asset_type == "commodity")
+            ]
+            if not scoped_watchlist:
+                continue
+            response = build_screen_response(
+                strategy=strategy,
+                asset_type=asset_type,
+                tickers=scoped_watchlist,
+                top_n=top_n,
+            )
+            candidates.extend(response.candidates)
+
+    candidates.sort(key=lambda candidate: (candidate.score, candidate.confidence), reverse=True)
+    top = candidates[:top_n]
+    if not top:
+        return WatchlistSummaryReport(
+            generated_at=generated_at,
+            status="no_actionable_idea",
+            reason="signal quality is mixed and no setup cleared the minimum threshold",
+        )
+
+    prices = get_snapshot_for([candidate.symbol for candidate in top])
+    items = []
+    for candidate in top:
+        price = (prices.get(candidate.symbol) or {}).get("price")
+        items.append(
+            WatchlistReportItem(
+                ticker=candidate.symbol,
+                action=_score_to_action(candidate.score),
+                confidence=_score_to_confidence(candidate.score),
+                why_now=(candidate.evidence[0] if candidate.evidence else candidate.entry_logic),
+                price_plan=_price_plan_from_candidate(candidate, price),
+            )
+        )
+    return WatchlistSummaryReport(generated_at=generated_at, items=items)
+
+
+def build_structured_market_overview(
+    strategies: list[str],
+    schedule: str = "daily",
+    language: str = "en",
+) -> MarketOverviewReport:
+    generated_at = datetime.now(dt_tz.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    summary_response = build_global_summary_response(schedule=schedule, language=language)
+    snapshot = summary_response.market_data
+    lookup = {point.ticker: point for point in snapshot.values()}
+
+    def _change_value(ticker: str) -> float | None:
+        point = lookup.get(ticker)
+        if not point or point.change_pct is None:
+            return None
+        value = float(point.change_pct)
+        if math.isnan(value):
+            return None
+        return value
+
+    spx_chg = _change_value("^GSPC")
+    ndx_chg = _change_value("^IXIC")
+    risk_tone = "mixed"
+    if spx_chg is not None and ndx_chg is not None:
+        if spx_chg > 0 and ndx_chg > 0:
+            risk_tone = "risk-on"
+        elif spx_chg < 0 and ndx_chg < 0:
+            risk_tone = "risk-off"
+
+    sector_map = {
+        "Technology": "XLK",
+        "Financials": "XLF",
+        "Energy": "XLE",
+        "Utilities": "XLU",
+        "Industrials": "XLI",
+        "Materials": "XLB",
+    }
+    sector_moves = []
+    for name, ticker in sector_map.items():
+        val = _change_value(ticker)
+        if val is not None:
+            sector_moves.append((name, ticker, val))
+    featured_sector = None
+    if sector_moves:
+        leader_name, leader_ticker, leader_change = sorted(sector_moves, key=lambda x: x[2], reverse=True)[0]
+        if leader_change >= 0.75:
+            featured_sector = FeaturedSectorIdea(
+                sector_name=leader_name,
+                reason="sector leadership and relative strength are currently supportive",
+                representative_tickers=[leader_ticker],
+                entry_style="buy pullbacks above support",
+                valid_until=_iso_valid_until(),
+            )
+
+    featured_stock = None
+    if featured_sector is None:
+        ideas = _top_market_stock_ideas(strategies or ["breakout"], top_n=1)
+        if ideas:
+            top = ideas[0]
+            symbol = str(top.get("symbol", "")).strip()
+            if symbol and int(top.get("score", 0)) >= 70:
+                price = (get_snapshot_for([symbol]).get(symbol) or {}).get("price")
+                featured_stock = FeaturedStockIdea(
+                    ticker=symbol,
+                    action=_score_to_action(int(top.get("score", 0))),
+                    why_now=((top.get("evidence") or [top.get("entry_logic", "setup confirmation")])[0]),
+                    price_plan=_price_plan_from_candidate(type("Candidate", (), top), price),
+                )
+
+    if featured_sector is None and featured_stock is None:
+        return MarketOverviewReport(
+            generated_at=generated_at,
+            risk_tone=risk_tone,
+            summary=summary_response.summary,
+            status="no_featured_idea_today",
+            reason="signal quality is mixed and no sector or stock passed the minimum threshold",
+        )
+
+    return MarketOverviewReport(
+        generated_at=generated_at,
+        risk_tone=risk_tone,
+        summary=summary_response.summary,
+        featured_sector=featured_sector,
+        featured_stock=featured_stock,
+    )
+
+
+def build_structured_featured_idea(
+    strategies: list[str],
+    schedule: str = "daily",
+    language: str = "en",
+) -> FeaturedIdeaReport:
+    generated_at = datetime.now(dt_tz.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    overview = build_structured_market_overview(strategies=strategies, schedule=schedule, language=language)
+    if overview.featured_stock is not None:
+        return FeaturedIdeaReport(
+            idea_kind="stock",
+            generated_at=generated_at,
+            featured_stock=overview.featured_stock,
+        )
+    if overview.featured_sector is not None:
+        return FeaturedIdeaReport(
+            idea_kind="sector",
+            generated_at=generated_at,
+            featured_sector=overview.featured_sector,
+        )
+    return FeaturedIdeaReport(
+        idea_kind="none",
+        generated_at=generated_at,
+        status="no_featured_idea_today",
+        reason=overview.reason or "no setup passed the minimum threshold",
+    )
+
+
+def _render_price_plan_text(plan: PricePlan, language: str = "en") -> list[str]:
+    if language == "zh":
+        lines = [
+            f"- 建议区间: {plan.entry_range or 'n/a'}",
+            f"- 理想价位: {plan.ideal_entry if plan.ideal_entry is not None else 'n/a'}",
+            f"- 止盈区间: {plan.take_profit_zone or 'n/a'}",
+            f"- 失效条件: {plan.stop_loss_or_invalidation or 'n/a'}",
+            f"- 有效期至: {plan.valid_until or 'n/a'}",
+        ]
+        if plan.invalidate_if:
+            lines.append(f"- 关注触发: {'; '.join(plan.invalidate_if)}")
+        return lines
+
+    lines = [
+        f"- Entry range: {plan.entry_range or 'n/a'}",
+        f"- Ideal entry: {plan.ideal_entry if plan.ideal_entry is not None else 'n/a'}",
+        f"- Take-profit zone: {plan.take_profit_zone or 'n/a'}",
+        f"- Invalidation: {plan.stop_loss_or_invalidation or 'n/a'}",
+        f"- Valid until: {plan.valid_until or 'n/a'}",
+    ]
+    if plan.invalidate_if:
+        lines.append(f"- Watch triggers: {'; '.join(plan.invalidate_if)}")
+    return lines
+
+
+def _render_structured_watchlist_message(
+    report: WatchlistSummaryReport,
+    language: str = "en",
+    detail_level: str = "brief",
+) -> str:
+    date_str = datetime.now(dt_tz.utc).strftime("%Y-%m-%d")
+    if report.status == "no_actionable_idea" or not report.items:
+        if language == "zh":
+            return (
+                f"{date_str} 决策简报\n"
+                "> watchlist\n\n"
+                "当前无高质量可执行机会。\n"
+                f"{report.reason or '继续观察，等待更清晰确认。'}"
+            )
+        return (
+            f"{date_str} Decision Brief\n"
+            "> watchlist\n\n"
+            "No actionable watchlist setup right now.\n"
+            f"{report.reason or 'Stay selective and wait for cleaner confirmation.'}"
+        )
+
+    show_price_plan = detail_level == "detailed"
+    lines = [
+        f"{date_str} 决策简报" if language == "zh" else f"{date_str} Decision Brief",
+        f"> {len(report.items)} ideas",
+        "",
+    ]
+    for item in report.items:
+        if language == "zh":
+            lines.append(f"{item.ticker} | {item.action.upper()} | 置信度 {item.confidence}")
+            lines.append(f"- 逻辑: {item.why_now}")
+        else:
+            lines.append(f"{item.ticker} | {item.action.upper()} | confidence {item.confidence}")
+            lines.append(f"- Why now: {item.why_now}")
+        if show_price_plan:
+            lines.extend(_render_price_plan_text(item.price_plan, language=language))
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def _render_structured_market_message(
+    report: MarketOverviewReport,
+    language: str = "en",
+    detail_level: str = "brief",
+) -> str:
+    date_str = datetime.now(dt_tz.utc).strftime("%Y-%m-%d")
+    show_details = detail_level == "detailed"
+    lines = [
+        f"{date_str} 大盘概览" if language == "zh" else f"{date_str} Market Overview",
+        f"- Risk tone: {report.risk_tone}",
+        "",
+        report.summary,
+        "",
+    ]
+    if report.featured_sector is not None:
+        sector = report.featured_sector
+        if language == "zh":
+            lines.append(f"重点板块: {sector.sector_name}")
+            if show_details:
+                lines.extend(
+                    [
+                        f"- 原因: {sector.reason}",
+                        f"- 代表标的: {', '.join(sector.representative_tickers) or 'n/a'}",
+                        f"- 介入方式: {sector.entry_style or 'n/a'}",
+                        f"- 有效期至: {sector.valid_until or 'n/a'}",
+                    ]
+                )
+        else:
+            lines.append(f"Featured Sector: {sector.sector_name}")
+            if show_details:
+                lines.extend(
+                    [
+                        f"- Reason: {sector.reason}",
+                        f"- Tickers: {', '.join(sector.representative_tickers) or 'n/a'}",
+                        f"- Entry style: {sector.entry_style or 'n/a'}",
+                        f"- Valid until: {sector.valid_until or 'n/a'}",
+                    ]
+                )
+    elif report.featured_stock is not None:
+        stock = report.featured_stock
+        if language == "zh":
+            lines.extend([f"重点个股: {stock.ticker}", f"- 原因: {stock.why_now}"])
+        else:
+            lines.extend([f"Featured Stock: {stock.ticker}", f"- Why now: {stock.why_now}"])
+        if show_details:
+            lines.extend(_render_price_plan_text(stock.price_plan, language=language))
+    else:
+        lines.append(
+            "今日无重点机会。" if language == "zh" else "No featured sector or stock today."
+        )
+        if report.reason:
+            lines.append(report.reason)
+    return "\n".join(lines).strip()
+
+
+def _render_structured_featured_idea(
+    report: FeaturedIdeaReport,
+    language: str = "en",
+    detail_level: str = "brief",
+) -> str:
+    date_str = datetime.now(dt_tz.utc).strftime("%Y-%m-%d")
+    show_details = detail_level == "detailed"
+    lines = [
+        f"{date_str} 今日重点机会" if language == "zh" else f"{date_str} Featured Idea",
+        "",
+    ]
+    if report.featured_stock is not None:
+        stock = report.featured_stock
+        if language == "zh":
+            lines.extend([f"{stock.ticker} | {stock.action.upper()}", f"- 原因: {stock.why_now}"])
+        else:
+            lines.extend([f"{stock.ticker} | {stock.action.upper()}", f"- Why now: {stock.why_now}"])
+        if show_details:
+            lines.extend(_render_price_plan_text(stock.price_plan, language=language))
+        return "\n".join(lines).strip()
+    if report.featured_sector is not None:
+        sector = report.featured_sector
+        if language == "zh":
+            lines.append(f"板块: {sector.sector_name}")
+            if show_details:
+                lines.extend(
+                    [
+                        f"- 原因: {sector.reason}",
+                        f"- 代表标的: {', '.join(sector.representative_tickers) or 'n/a'}",
+                        f"- 介入方式: {sector.entry_style or 'n/a'}",
+                        f"- 有效期至: {sector.valid_until or 'n/a'}",
+                    ]
+                )
+        else:
+            lines.append(f"Sector: {sector.sector_name}")
+            if show_details:
+                lines.extend(
+                    [
+                        f"- Reason: {sector.reason}",
+                        f"- Tickers: {', '.join(sector.representative_tickers) or 'n/a'}",
+                        f"- Entry style: {sector.entry_style or 'n/a'}",
+                        f"- Valid until: {sector.valid_until or 'n/a'}",
+                    ]
+                )
+        return "\n".join(lines).strip()
+    lines.append("今日无重点机会。" if language == "zh" else "No featured idea today.")
+    if report.reason:
+        lines.append(report.reason)
+    return "\n".join(lines).strip()
 
 
 def _normalize_sections(sections: list[str] | None) -> list[str]:
@@ -598,28 +1123,38 @@ def build_push_messages(
 ) -> list[str]:
     sections = _normalize_sections(report_sections)
     normalized_detail = _normalize_push_detail(detail_level)
-    messages = [
-        _watchlist_brief_message(
-            watchlist,
-            strategies,
-            detail_level=normalized_detail,
-            schedule=schedule,
-            language=language,
-        )
-    ]
+    messages = [_render_structured_watchlist_message(
+        build_structured_watchlist_report(watchlist, strategies),
+        language=language,
+        detail_level=normalized_detail,
+    )]
     if "market" in sections:
         messages.append(
-            _market_brief_message(
-                detail_level=normalized_detail,
-                strategies=strategies,
-                schedule=schedule,
+            _render_structured_market_message(
+                build_structured_market_overview(
+                    strategies=strategies,
+                    schedule=schedule,
+                    language=language,
+                ),
                 language=language,
+                detail_level=normalized_detail,
+            )
+        )
+        messages.append(
+            _render_structured_featured_idea(
+                build_structured_featured_idea(
+                    strategies=strategies,
+                    schedule=schedule,
+                    language=language,
+                ),
+                language=language,
+                detail_level=normalized_detail,
             )
         )
     if "commodity" in sections:
         messages.append(
             _commodity_brief_message(
-                detail_level=normalized_detail,
+                detail_level=_normalize_push_detail(detail_level),
                 schedule=schedule,
                 language=language,
             )
@@ -679,6 +1214,17 @@ def build_detailed_report_payload(profile_id: str, prefs: dict) -> dict:
 
     created_at = datetime.now(dt_tz.utc).isoformat()
     report_id = _report_id()
+    structured_watchlist = build_structured_watchlist_report(watchlist, strategies).model_dump()
+    structured_market = (
+        build_structured_market_overview(strategies=strategies, schedule=schedule, language=language).model_dump()
+        if "market" in report_sections
+        else None
+    )
+    structured_featured = (
+        build_structured_featured_idea(strategies=strategies, schedule=schedule, language=language).model_dump()
+        if "market" in report_sections
+        else None
+    )
     return {
         "report_id": report_id,
         "profile_id": profile_id,
@@ -690,7 +1236,10 @@ def build_detailed_report_payload(profile_id: str, prefs: dict) -> dict:
         },
         "sections": {
             "watchlist_summary": watchlist_summary,
+            "watchlist_structured": structured_watchlist,
             "market_summary": market_summary,
+            "market_overview_structured": structured_market,
+            "featured_idea_structured": structured_featured,
             "market_stock_ideas": market_stock_ideas,
             "commodity_summary": commodity_summary,
             "strategy_reports": strategy_reports,
@@ -737,11 +1286,41 @@ def render_detailed_report_markdown(payload: dict) -> str:
         f"- Generated: {payload['created_at']}",
     ]
 
+    watchlist_structured = (
+        WatchlistSummaryReport(**sections["watchlist_structured"])
+        if sections.get("watchlist_structured")
+        else None
+    )
+    market_structured = (
+        MarketOverviewReport(**sections["market_overview_structured"])
+        if sections.get("market_overview_structured")
+        else None
+    )
+    featured_structured = (
+        FeaturedIdeaReport(**sections["featured_idea_structured"])
+        if sections.get("featured_idea_structured")
+        else None
+    )
+
     if report_mode in {"summary", "summary+ideas"}:
-        if "watchlist" in report_sections and sections.get("watchlist_summary"):
-            lines.extend(["", "## Watchlist Summary", sections["watchlist_summary"]])
-        if "market" in report_sections and sections.get("market_summary"):
-            lines.extend(["", "## US Market Summary", sections["market_summary"]])
+        if "watchlist" in report_sections:
+            rendered_watchlist = (
+                _render_structured_watchlist_message(watchlist_structured)
+                if watchlist_structured is not None
+                else sections.get("watchlist_summary", "")
+            )
+            if rendered_watchlist:
+                lines.extend(["", "## Watchlist Summary", rendered_watchlist])
+        if "market" in report_sections:
+            rendered_market = (
+                _render_structured_market_message(market_structured)
+                if market_structured is not None
+                else sections.get("market_summary", "")
+            )
+            if rendered_market:
+                lines.extend(["", "## US Market Summary", rendered_market])
+            if featured_structured is not None:
+                lines.extend(["", "## Featured Idea", _render_structured_featured_idea(featured_structured)])
             market_ideas = sections.get("market_stock_ideas") or []
             lines.extend(["", "## Market Stock Ideas"])
             if market_ideas:

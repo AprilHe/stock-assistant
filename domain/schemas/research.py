@@ -78,11 +78,16 @@ class BacktestMetrics(BaseModel):
     final_equity: float
     total_return_pct: float
     annualized_return_pct: float
+    annualized_volatility_pct: float = 0.0
     max_drawdown_pct: float
     sharpe_ratio: float
+    sortino_ratio: float = 0.0
     win_rate_pct: float
     trades: int
     exposure_pct: float
+    turnover_pct: float = 0.0
+    benchmark_return_pct: float = 0.0
+    alpha_vs_benchmark_pct: float = 0.0
 
 
 class EquityPoint(BaseModel):

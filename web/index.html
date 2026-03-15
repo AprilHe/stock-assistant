@@ -409,6 +409,174 @@
       document.getElementById(elementId).innerHTML = `<div class="fade-in whitespace-pre-wrap">${escapeHtml(text)}</div>`;
     }
 
+    function renderInfoPill(label, value, tone = "default") {
+      const tones = {
+        buy: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
+        hold: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+        reduce: "border-rose-500/30 bg-rose-500/10 text-rose-300",
+        default: "border-white/15 bg-white/5 text-slate-300",
+      };
+      return `<span class="rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] ${tones[tone] || tones.default}">${escapeHtml(label)}${value ? ` · ${escapeHtml(value)}` : ""}</span>`;
+    }
+
+    function renderPricePlan(plan) {
+      if (!plan) {
+        return `<div class="text-sm text-slate-500">No price plan.</div>`;
+      }
+      const triggers = Array.isArray(plan.invalidate_if) && plan.invalidate_if.length
+        ? `<div class="mt-2 text-xs text-slate-500">Watch: ${escapeHtml(plan.invalidate_if.join("; "))}</div>`
+        : "";
+      return `
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div class="rounded-xl border border-white/10 bg-slate-900/40 p-4">
+            <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Entry Range</div>
+            <div class="mt-2 text-lg font-semibold text-slate-100">${escapeHtml(plan.entry_range || "n/a")}</div>
+            <div class="mt-1 text-xs text-slate-500">Ideal ${plan.ideal_entry ?? "n/a"}</div>
+          </div>
+          <div class="rounded-xl border border-white/10 bg-slate-900/40 p-4">
+            <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Validity</div>
+            <div class="mt-2 text-sm text-slate-200">${escapeHtml(plan.valid_until || "n/a")}</div>
+            <div class="mt-1 text-xs text-slate-500">${escapeHtml(plan.stop_loss_or_invalidation || "n/a")}</div>
+          </div>
+          <div class="rounded-xl border border-white/10 bg-slate-900/40 p-4 sm:col-span-2">
+            <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Target Zone</div>
+            <div class="mt-2 text-sm text-slate-200">${escapeHtml(plan.take_profit_zone || "n/a")}</div>
+            ${triggers}
+          </div>
+        </div>`;
+    }
+
+    function renderStructuredWatchlist(report) {
+      if (!report || report.status === "no_actionable_idea" || !Array.isArray(report.items) || !report.items.length) {
+        return `
+          <section class="rounded-2xl border border-white/10 bg-slate-950/40 p-5">
+            <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Watchlist Summary</div>
+            <div class="mt-3 text-sm text-slate-300">${escapeHtml(report?.reason || "No actionable watchlist setup right now.")}</div>
+          </section>`;
+      }
+
+      const cards = report.items.map((item) => `
+        <article class="rounded-2xl border border-white/10 bg-slate-950/40 p-5">
+          <div class="flex flex-wrap items-center gap-2">
+            <div class="text-lg font-semibold text-slate-100">${escapeHtml(item.ticker)}</div>
+            ${renderInfoPill(item.action || "hold", item.confidence || "", String(item.action || "default").toLowerCase())}
+          </div>
+          <div class="mt-3 text-sm leading-relaxed text-slate-300">${escapeHtml(item.why_now || "No rationale available.")}</div>
+          <div class="mt-4">${renderPricePlan(item.price_plan)}</div>
+        </article>
+      `).join("");
+
+      return `
+        <section>
+          <div class="mb-4">
+            <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Watchlist Summary</div>
+            <div class="mt-1 text-sm text-slate-400">Structured per-ticker action plan.</div>
+          </div>
+          <div class="space-y-4">${cards}</div>
+        </section>`;
+    }
+
+    function renderStructuredMarket(report) {
+      if (!report) return "";
+      const featuredSector = report.featured_sector ? `
+        <div class="rounded-2xl border border-white/10 bg-slate-950/40 p-5">
+          <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Featured Sector</div>
+          <div class="mt-2 text-lg font-semibold text-slate-100">${escapeHtml(report.featured_sector.sector_name)}</div>
+          <div class="mt-2 text-sm text-slate-300">${escapeHtml(report.featured_sector.reason || "")}</div>
+          <div class="mt-3 text-xs text-slate-500">Tickers: ${escapeHtml((report.featured_sector.representative_tickers || []).join(", ") || "n/a")}</div>
+          <div class="mt-1 text-xs text-slate-500">Entry style: ${escapeHtml(report.featured_sector.entry_style || "n/a")}</div>
+          <div class="mt-1 text-xs text-slate-500">Valid until: ${escapeHtml(report.featured_sector.valid_until || "n/a")}</div>
+        </div>` : "";
+
+      const featuredStock = report.featured_stock ? `
+        <div class="rounded-2xl border border-white/10 bg-slate-950/40 p-5">
+          <div class="flex flex-wrap items-center gap-2">
+            <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Featured Stock</div>
+            ${renderInfoPill(report.featured_stock.action || "hold", "", String(report.featured_stock.action || "default").toLowerCase())}
+          </div>
+          <div class="mt-2 text-lg font-semibold text-slate-100">${escapeHtml(report.featured_stock.ticker)}</div>
+          <div class="mt-2 text-sm text-slate-300">${escapeHtml(report.featured_stock.why_now || "")}</div>
+          <div class="mt-4">${renderPricePlan(report.featured_stock.price_plan)}</div>
+        </div>` : "";
+
+      const fallback = (!featuredSector && !featuredStock) ? `
+        <div class="rounded-2xl border border-white/10 bg-slate-950/40 p-5 text-sm text-slate-300">
+          ${escapeHtml(report.reason || "No featured sector or stock today.")}
+        </div>` : "";
+
+      return `
+        <section>
+          <div class="mb-4">
+            <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Market Overview</div>
+            <div class="mt-1 flex flex-wrap gap-2">
+              ${renderInfoPill("Risk Tone", report.risk_tone || "mixed")}
+            </div>
+            <div class="mt-3 text-sm leading-relaxed text-slate-300">${escapeHtml(report.summary || "")}</div>
+          </div>
+          <div class="space-y-4">${featuredSector}${featuredStock}${fallback}</div>
+        </section>`;
+    }
+
+    function renderStructuredFeatured(report) {
+      if (!report) return "";
+      let body = "";
+      if (report.featured_stock) {
+        body = `
+          <div class="rounded-2xl border border-white/10 bg-slate-950/40 p-5">
+            <div class="flex flex-wrap items-center gap-2">
+              <div class="text-lg font-semibold text-slate-100">${escapeHtml(report.featured_stock.ticker)}</div>
+              ${renderInfoPill(report.featured_stock.action || "hold", "", String(report.featured_stock.action || "default").toLowerCase())}
+            </div>
+            <div class="mt-3 text-sm text-slate-300">${escapeHtml(report.featured_stock.why_now || "")}</div>
+            <div class="mt-4">${renderPricePlan(report.featured_stock.price_plan)}</div>
+          </div>`;
+      } else if (report.featured_sector) {
+        body = `
+          <div class="rounded-2xl border border-white/10 bg-slate-950/40 p-5">
+            <div class="text-lg font-semibold text-slate-100">${escapeHtml(report.featured_sector.sector_name)}</div>
+            <div class="mt-3 text-sm text-slate-300">${escapeHtml(report.featured_sector.reason || "")}</div>
+            <div class="mt-3 text-xs text-slate-500">Tickers: ${escapeHtml((report.featured_sector.representative_tickers || []).join(", ") || "n/a")}</div>
+            <div class="mt-1 text-xs text-slate-500">Entry style: ${escapeHtml(report.featured_sector.entry_style || "n/a")}</div>
+            <div class="mt-1 text-xs text-slate-500">Valid until: ${escapeHtml(report.featured_sector.valid_until || "n/a")}</div>
+          </div>`;
+      } else {
+        body = `<div class="rounded-2xl border border-white/10 bg-slate-950/40 p-5 text-sm text-slate-300">${escapeHtml(report.reason || "No featured idea today.")}</div>`;
+      }
+      return `
+        <section>
+          <div class="mb-4">
+            <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Featured Idea</div>
+            <div class="mt-1 text-sm text-slate-400">Highest-priority actionable setup.</div>
+          </div>
+          ${body}
+        </section>`;
+    }
+
+    function renderStructuredProfileReport(payload) {
+      const box = document.getElementById("profile-report-box");
+      const sections = payload.sections || {};
+      const watchlist = renderStructuredWatchlist(sections.watchlist_structured);
+      const market = sections.market_overview_structured ? renderStructuredMarket(sections.market_overview_structured) : "";
+      const featured = sections.featured_idea_structured ? renderStructuredFeatured(sections.featured_idea_structured) : "";
+      const commodity = sections.commodity_summary ? `
+        <section class="rounded-2xl border border-white/10 bg-slate-950/40 p-5">
+          <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Commodity Summary</div>
+          <div class="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-slate-300">${escapeHtml(sections.commodity_summary)}</div>
+        </section>` : "";
+
+      box.innerHTML = `
+        <div class="fade-in space-y-6">
+          <div class="flex flex-wrap items-center gap-2">
+            ${renderInfoPill("Report", payload.report_id || "latest")}
+            ${renderInfoPill("Generated", payload.created_at || "")}
+          </div>
+          ${watchlist}
+          ${market}
+          ${featured}
+          ${commodity}
+        </div>`;
+    }
+
     function proposalTone(proposal) {
       const normalized = String(proposal || "").toLowerCase();
       if (normalized === "buy") {
@@ -651,12 +819,12 @@
       button.textContent = "Generating...";
       box.innerHTML = `<span class="text-slate-500">Building personalized report for ${escapeHtml(profileId)}...</span>`;
       try {
-        const res = await fetch(`/api/report/${encodeURIComponent(profileId)}`);
+        const res = await fetch(`/api/report/${encodeURIComponent(profileId)}/structured`);
         const data = await res.json();
         if (!res.ok) {
           throw new Error(data.detail || "Failed to generate report.");
         }
-        renderTextBox("profile-report-box", data.report);
+        renderStructuredProfileReport(data);
         showPrefsStatus(`Generated personalized report for ${profileId}.`, "success");
         loadReportHistory();
       } catch (e) {
@@ -673,12 +841,12 @@
       const box = document.getElementById("profile-report-box");
       box.innerHTML = `<span class="text-slate-500">Loading saved report ${escapeHtml(reportId)}...</span>`;
       try {
-        const res = await fetch(`/api/reports/${encodeURIComponent(profileId)}/${encodeURIComponent(reportId)}/download?format=md`);
-        const data = await res.text();
+        const res = await fetch(`/api/reports/${encodeURIComponent(profileId)}/${encodeURIComponent(reportId)}/structured`);
+        const data = await res.json();
         if (!res.ok) {
           throw new Error("Failed to load report.");
         }
-        renderTextBox("profile-report-box", data);
+        renderStructuredProfileReport(data);
       } catch (e) {
         box.innerHTML = `<span class="text-rose-400">${escapeHtml(e.message || "Failed to load report.")}</span>`;
       }
@@ -707,7 +875,7 @@
                 <div class="mt-1 text-xs text-slate-500">${escapeHtml(report.created_at)}</div>
               </div>
               <div class="flex flex-wrap gap-2">
-                <button onclick="previewSavedReport('${report.report_id}')" class="btn-secondary rounded-xl px-3 py-2 text-xs hover:bg-white/10">Preview</button>
+                <button onclick="previewSavedReport('${report.report_id}')" class="btn-secondary rounded-xl px-3 py-2 text-xs hover:bg-white/10">Preview UI</button>
                 <a href="/api/reports/${encodeURIComponent(profileId)}/${encodeURIComponent(report.report_id)}/download?format=md" class="btn-secondary rounded-xl px-3 py-2 text-xs hover:bg-white/10">Download MD</a>
                 <a href="/api/reports/${encodeURIComponent(profileId)}/${encodeURIComponent(report.report_id)}/download?format=json" class="btn-secondary rounded-xl px-3 py-2 text-xs hover:bg-white/10">Download JSON</a>
               </div>

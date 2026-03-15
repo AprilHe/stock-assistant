@@ -13,8 +13,8 @@ strategies:
       screen: true
       backtest: true
     python_impl: breakout
-    yaml_file: breakout.yaml
-    md_file: breakout.md
+    yaml_file: breakout/config.yaml
+    md_file: breakout/README.md
 
   - id: pullback
     name: Pullback
@@ -30,8 +30,8 @@ strategies:
       screen: true
       backtest: true
     python_impl: pullback
-    yaml_file: pullback.yaml
-    md_file: pullback.md
+    yaml_file: pullback/config.yaml
+    md_file: pullback/README.md
 
   - id: commodity_macro
     name: Commodity Macro
@@ -47,8 +47,8 @@ strategies:
       screen: true
       backtest: true
     python_impl: commodity_macro
-    yaml_file: commodity_macro.yaml
-    md_file: commodity_macro.md
+    yaml_file: commodity_macro/config.yaml
+    md_file: commodity_macro/README.md
 
   - id: trend_following
     name: Trend Following
@@ -66,8 +66,8 @@ strategies:
       screen: true
       backtest: true
     python_impl: trend_following
-    yaml_file: trend_following.yaml
-    md_file: trend_following.md
+    yaml_file: trend_following/config.yaml
+    md_file: trend_following/README.md
 
   - id: mean_reversion
     name: Mean Reversion
@@ -85,8 +85,8 @@ strategies:
       screen: true
       backtest: true
     python_impl: mean_reversion
-    yaml_file: mean_reversion.yaml
-    md_file: mean_reversion.md
+    yaml_file: mean_reversion/config.yaml
+    md_file: mean_reversion/README.md
 
   - id: donchian_breakout
     name: Donchian Breakout
@@ -104,8 +104,8 @@ strategies:
       screen: true
       backtest: true
     python_impl: donchian_breakout
-    yaml_file: donchian_breakout.yaml
-    md_file: donchian_breakout.md
+    yaml_file: donchian_breakout/config.yaml
+    md_file: donchian_breakout/README.md
 
   - id: emotion_cycle
     name: Emotion Cycle
@@ -122,5 +122,5 @@ strategies:
       screen: false
       backtest: false
     python_impl: ""
-    yaml_file: emotion_cycle.yaml
-    md_file: emotion_cycle.md
+    yaml_file: emotion_cycle/config.yaml
+    md_file: emotion_cycle/README.md

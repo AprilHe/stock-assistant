@@ -6,20 +6,36 @@ AI-powered market analysis that delivers pre-market reports and trade ideas ever
 
 ## Table of Contents
 
-1. [What It Does](#what-it-does)
-2. [Start Here](#start-here)
-3. [Option A — GitHub Actions (default, no local setup)](#option-a--github-actions-default-no-local-setup)
-4. [Option B — Web Dashboard & API Server](#option-b--web-dashboard--api-server)
-5. [Option C — Telegram Bot (interactive)](#option-c--telegram-bot-interactive)
-6. [Option D — CLI / Cron](#option-d--cli--cron)
-7. [Environment Setup (Local, One-Time for B/C/D)](#environment-setup-local-only)
-8. [API Reference](#api-reference)
-9. [Telegram Bot Commands](#telegram-bot-commands)
-10. [Strategies](#strategies)
-11. [Switching LLM Providers](#switching-llm-providers)
-12. [Project Structure](#project-structure)
-13. [API Keys](#api-keys)
-14. [Disclaimer](#disclaimer)
+- [Stock Assistant](#stock-assistant)
+  - [Table of Contents](#table-of-contents)
+  - [What It Does](#what-it-does)
+  - [Start Here](#start-here)
+  - [Option A — GitHub Actions (default, no local setup)](#option-a--github-actions-default-no-local-setup)
+    - [Step 1 — Fork the repository](#step-1--fork-the-repository)
+    - [Step 2 — Add API keys as Secrets](#step-2--add-api-keys-as-secrets)
+    - [Step 3 — Set your watchlist and preferences (optional)](#step-3--set-your-watchlist-and-preferences-optional)
+    - [Step 4 — Enable the workflow](#step-4--enable-the-workflow)
+    - [Step 5 — Run it once manually](#step-5--run-it-once-manually)
+    - [Step 6 — Automatic runs continue from your saved settings](#step-6--automatic-runs-continue-from-your-saved-settings)
+    - [What the workflow does](#what-the-workflow-does)
+    - [Change the schedule](#change-the-schedule)
+  - [Option B — Web Dashboard \& API Server](#option-b--web-dashboard--api-server)
+  - [Option C — Telegram Bot (interactive)](#option-c--telegram-bot-interactive)
+  - [Option D — CLI / Cron](#option-d--cli--cron)
+  - [Environment Setup (local only)](#environment-setup-local-only)
+    - [1. Create the virtual environment](#1-create-the-virtual-environment)
+    - [2. Configure API keys](#2-configure-api-keys)
+    - [3. Smoke-test the core modules](#3-smoke-test-the-core-modules)
+  - [API Reference](#api-reference)
+  - [Telegram Bot Commands](#telegram-bot-commands)
+    - [On-demand](#on-demand)
+    - [Watchlist management](#watchlist-management)
+    - [Scheduled push settings](#scheduled-push-settings)
+  - [Strategies](#strategies)
+  - [Switching LLM Providers](#switching-llm-providers)
+  - [Project Structure](#project-structure)
+  - [API Keys](#api-keys)
+  - [Disclaimer](#disclaimer)
 
 ---
 
@@ -35,12 +51,11 @@ AI-powered market analysis that delivers pre-market reports and trade ideas ever
 
 ## Start Here
 
-Choose a run path first:
+Choose a run option first.
 
-1. **Option A (GitHub Actions)** — no local Python setup required.
-2. **Option B/C/D (local run modes)** — complete **Environment Setup** once, then use any/all of B, C, D.
-
-Quick rule: `Environment Setup` applies to **B/C/D only**, and it is one-time.
+- If you want the easiest setup, use **Option A: GitHub Actions**. You can configure notifications and report settings entirely in the GitHub web UI.
+- If you want a browser dashboard or interactive bot, use **Option B/C** and then do **Environment Setup**.
+- If you want terminal or cron usage, use **Option D** and then do **Environment Setup**.
 
 ## Option A — GitHub Actions (default, no local setup)
 
@@ -75,7 +90,8 @@ In your forked repo: **Settings → Secrets and variables → Actions → Variab
 | `WATCHLIST` | `AAPL,NVDA,^GSPC,GC=F` | Tickers to track (default: `^GSPC,^IXIC,BTC-USD,GC=F,CL=F`) |
 | `STRATEGIES` | `breakout,pullback` | Screening strategies (default: `breakout`) |
 | `REPORT_LANGUAGE` | `zh` | `en` or `zh` (default: `en`) |
-| `LLM_MODEL` | `gemini/gemini-1.5-flash` | Which LLM to use (default: `gemini/gemini-1.5-flash`) |
+| `LLM_MODEL` | `gemini/gemini-2.0-flash` | Override the LLM model. If omitted, the model is auto-selected from whichever API key is set (Gemini → `gemini/gemini-2.0-flash`, Anthropic → `claude-haiku-4-5-20251001`, OpenAI → `gpt-4o-mini`, Groq → `groq/llama-3.3-70b-versatile`). |
+| `LLM_REQUEST_DELAY_S` | `4` | Seconds to wait between LLM calls. Set to `4` when using a free-tier provider (Gemini, Groq) to stay within the ~15 RPM limit. Default: `0` (no delay). |
 
 ### Step 4 — Enable the workflow
 
@@ -93,15 +109,15 @@ Go to **Actions → Stock Report → Run workflow**. You can override any settin
 | `strategies` | e.g. `breakout,pullback,commodity_macro` |
 | `language` | `en` or `zh` |
 | `sections` | `watchlist` / `watchlist,market` / `watchlist,market,commodity` |
-| `send_telegram` | `true` to send to Telegram, `false` to skip |
+| `send_telegram` | `true` to send to Telegram, `false` to skip (default: `false`) |
 
 ### Step 6 — Automatic runs continue from your saved settings
 
 After that first manual run, the workflow ([`.github/workflows/stock-report.yml`](/Users/april/Desktop/ai-tools/stock-assisstant/.github/workflows/stock-report.yml)) will keep running automatically based on the repo settings:
 - **Every trading day (Mon–Fri) at 8:30 AM New York time**
 - Uses your repository secrets and variables by default
-- Sends the report to your Telegram chat
 - Saves the report as a downloadable artifact in the Actions run
+- Sends the report to Telegram **only if** `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set and `send_telegram` is `true`
 
 ### What the workflow does
 
@@ -110,7 +126,7 @@ After that first manual run, the workflow ([`.github/workflows/stock-report.yml`
 3. Runs the report script with all env vars injected
 4. **Writes the report to the GitHub Actions Job Summary** (visible on the run page)
 5. **Uploads `.md` + `.json` report files as a downloadable artifact** (kept 30 days)
-6. **Sends the report to your Telegram chat**
+6. **Sends the report to your Telegram chat** _(optional — skipped if tokens are not set)_
 
 ### Change the schedule
 
@@ -131,8 +147,14 @@ schedule:
 
 A local server with a browser UI and full REST API. Also activates scheduled Telegram pushes and the interactive Telegram bot.
 
+**Requires:** [Local setup](#local-setup) first.
+
 ```bash
 cd stock-assistant
+python3 -m venv venv
+source venv/bin/activate        # macOS / Linux
+# venv\Scripts\activate         # Windows
+pip install -r requirements.txt
 python main.py
 ```
 
@@ -145,15 +167,13 @@ The server also starts:
 - **APScheduler** — runs per-user scheduled Telegram pushes
 - **Telegram bot** — starts polling if `TELEGRAM_BOT_TOKEN` is set
 
-To prevent duplicate Telegram notifications when GitHub Actions is your primary sender, set:
-- `DISABLE_BOT_SCHEDULED_PUSH=true`
-This keeps the bot interactive while disabling all local APScheduler push delivery.
-
 ---
 
 ## Option C — Telegram Bot (interactive)
 
 A conversational bot you can message any time to get on-demand reports and manage your watchlist.
+
+**Requires:** The web server running (Option B). The bot starts automatically.
 
 **Setup:**
 1. Message `@BotFather` → `/newbot` → copy the token into `TELEGRAM_BOT_TOKEN` in `.env`
@@ -185,6 +205,8 @@ See all bot commands in the [Telegram Bot Commands](#telegram-bot-commands) sect
 ## Option D — CLI / Cron
 
 Generate a report from the terminal — no server required. Useful for scheduled tasks or quick spot-checks.
+
+**Requires:** [Local setup](#local-setup) first.
 
 ```bash
 cd stock-assistant
@@ -228,7 +250,7 @@ Reports are saved to `reports/github-actions/<report_id>.md` and `.json`.
 
 ## Environment Setup (local only)
 
-One-time setup for Options **B/C/D**.
+Required for Options B, C, and D.
 
 ### 1. Create the virtual environment
 
@@ -251,20 +273,24 @@ cp .env.example .env
 Edit `.env`:
 
 ```bash
-# Pick one LLM and set its key
-LLM_MODEL=gemini/gemini-1.5-flash
-GEMINI_API_KEY=your_key_here
+# LLM_MODEL is optional — if omitted, the model is auto-selected from whichever key is set below.
+# GEMINI_API_KEY=your_key_here          # → gemini/gemini-2.0-flash (free tier)
+# ANTHROPIC_API_KEY=your_key_here       # → claude-haiku-4-5-20251001
+# OPENAI_API_KEY=your_key_here          # → gpt-4o-mini
+# GROQ_API_KEY=your_key_here            # → groq/llama-3.3-70b-versatile (free tier)
+
+# To override the auto-selected model:
+# LLM_MODEL=gemini/gemini-2.0-flash
+
+# Free-tier rate limit guard (set to 4 for Gemini/Groq free tiers — ~15 RPM limit)
+# LLM_REQUEST_DELAY_S=4
 
 # News headlines
 NEWS_API_KEY=your_key_here
 
-# Telegram (optional)
-TELEGRAM_BOT_TOKEN=your_bot_token
-TELEGRAM_CHAT_ID=your_chat_id
-
-# Optional guard: disable local bot scheduled pushes
-# Use this when GitHub Actions already sends your daily report
-DISABLE_BOT_SCHEDULED_PUSH=true
+# Telegram — optional. Remove or leave blank to skip Telegram delivery.
+# TELEGRAM_BOT_TOKEN=your_bot_token
+# TELEGRAM_CHAT_ID=your_chat_id
 ```
 
 ### 3. Smoke-test the core modules
@@ -354,16 +380,27 @@ Strategy definitions live in `strategies/` — each has a `.yaml` (metadata) and
 
 ## Switching LLM Providers
 
-Change one line in `.env` (local) or the `LLM_MODEL` repository variable (GitHub Actions):
+`LLM_MODEL` is **optional**. If you omit it, the model is auto-selected from whichever API key is present in the environment:
+
+| API key set | Auto-selected model |
+|---|---|
+| `GEMINI_API_KEY` | `gemini/gemini-2.0-flash` (free tier) |
+| `ANTHROPIC_API_KEY` | `claude-haiku-4-5-20251001` |
+| `OPENAI_API_KEY` | `gpt-4o-mini` |
+| `GROQ_API_KEY` | `groq/llama-3.3-70b-versatile` (free tier) |
+
+To override, set `LLM_MODEL` explicitly:
 
 ```bash
-LLM_MODEL=gemini/gemini-1.5-flash              # Google Gemini (free)
+LLM_MODEL=gemini/gemini-2.0-flash              # Google Gemini (free)
 LLM_MODEL=anthropic/claude-sonnet-4-6           # Anthropic Claude
 LLM_MODEL=gpt-4o                                # OpenAI GPT-4o
 LLM_MODEL=groq/llama-3.3-70b-versatile          # Groq Llama (free, fast)
 ```
 
-Set the matching API key. All routing is handled by [LiteLLM](https://github.com/BerriAI/litellm) — no code changes needed.
+All routing is handled by [LiteLLM](https://github.com/BerriAI/litellm) — no code changes needed.
+
+**Free-tier rate limits:** Gemini and Groq free tiers allow ~15 RPM. Each report generation makes 3–5 LLM calls. Set `LLM_REQUEST_DELAY_S=4` in `.env` to add a 4-second gap between calls and avoid hitting the limit.
 
 ---
 

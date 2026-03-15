@@ -57,9 +57,9 @@ env:
   STRATEGIES: ${{ inputs.strategies || vars.STRATEGIES || 'breakout' }}
   REPORT_LANGUAGE: ${{ inputs.language || vars.REPORT_LANGUAGE || 'en' }}
   REPORT_SECTIONS: ${{ inputs.sections || vars.REPORT_SECTIONS || 'watchlist,market' }}
-  SEND_TELEGRAM: ${{ inputs.send_telegram || 'true' }}
+  SEND_TELEGRAM: ${{ inputs.send_telegram || 'false' }}
   BOT_NOTIFICATION_MODE: ${{ inputs.notification_mode || vars.BOT_NOTIFICATION_MODE || 'simple' }}
-  LLM_MODEL: ${{ vars.LLM_MODEL || 'gemini/gemini-1.5-flash' }}
+  LLM_MODEL: ${{ vars.LLM_MODEL || '' }}
 
 # ─── Jobs ────────────────────────────────────────────────────────────────────
 jobs:

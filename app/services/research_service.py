@@ -40,12 +40,12 @@ from domain.schemas.research import (
     TickerAnalysisStructured,
     TickerAnalysisResponse,
 )
-from research.strategies.commodity_macro import evaluate_commodity_macro
-from research.strategies.breakout import evaluate_breakout
-from research.strategies.donchian_breakout import evaluate_donchian_breakout
-from research.strategies.mean_reversion import evaluate_mean_reversion
-from research.strategies.pullback import evaluate_pullback
-from research.strategies.trend_following import evaluate_trend_following
+from strategies.commodity_macro.impl import evaluate_commodity_macro
+from strategies.breakout.impl import evaluate_breakout
+from strategies.donchian_breakout.impl import evaluate_donchian_breakout
+from strategies.mean_reversion.impl import evaluate_mean_reversion
+from strategies.pullback.impl import evaluate_pullback
+from strategies.trend_following.impl import evaluate_trend_following
 
 _TICKER_RE = re.compile(r"^[A-Z0-9.\-=^]+$")
 _ASSET_TYPES = {"stock", "commodity"}

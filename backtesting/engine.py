@@ -204,6 +204,58 @@ def _sharpe_ratio(equity_curve: list[float]) -> float:
     return round((mean / std) * math.sqrt(252), 2)
 
 
+def _annualized_volatility_pct(equity_curve: list[float]) -> float:
+    if len(equity_curve) < 3:
+        return 0.0
+    daily_returns: list[float] = []
+    for i in range(1, len(equity_curve)):
+        prev = equity_curve[i - 1]
+        curr = equity_curve[i]
+        if prev <= 0:
+            continue
+        daily_returns.append((curr - prev) / prev)
+    if len(daily_returns) < 2:
+        return 0.0
+    mean = sum(daily_returns) / len(daily_returns)
+    variance = sum((x - mean) ** 2 for x in daily_returns) / (len(daily_returns) - 1)
+    return round(math.sqrt(variance) * math.sqrt(252) * 100, 2)
+
+
+def _sortino_ratio(equity_curve: list[float]) -> float:
+    if len(equity_curve) < 3:
+        return 0.0
+    daily_returns: list[float] = []
+    downside_returns: list[float] = []
+    for i in range(1, len(equity_curve)):
+        prev = equity_curve[i - 1]
+        curr = equity_curve[i]
+        if prev <= 0:
+            continue
+        ret = (curr - prev) / prev
+        daily_returns.append(ret)
+        if ret < 0:
+            downside_returns.append(ret)
+    if len(daily_returns) < 2 or not downside_returns:
+        return 0.0
+    mean = sum(daily_returns) / len(daily_returns)
+    downside_mean_square = sum(x * x for x in downside_returns) / len(downside_returns)
+    downside_dev = math.sqrt(downside_mean_square)
+    if downside_dev == 0:
+        return 0.0
+    return round((mean / downside_dev) * math.sqrt(252), 2)
+
+
+def _benchmark_return_pct(start_date: date, end_date: date, benchmark: str = "SPY") -> float:
+    df = _download(benchmark, start_date, end_date)
+    if df.empty or len(df) < 2:
+        return 0.0
+    first_close = float(df["Close"].iloc[0])
+    last_close = float(df["Close"].iloc[-1])
+    if first_close <= 0:
+        return 0.0
+    return round(((last_close - first_close) / first_close) * 100, 2)
+
+
 def _normalize_ohlcv_frame(df):
     if df.empty:
         return df
@@ -289,6 +341,7 @@ def run_backtest(
     trades: list[BacktestTrade] = []
     equity_points: list[EquityPoint] = []
     in_market_days = 0
+    gross_turnover = 0.0
 
     for idx in range(len(df)):
         row_date = df.index[idx].date()
@@ -316,6 +369,7 @@ def run_backtest(
             if exit_reason:
                 exit_px = close_px * (1 - slippage_rate)
                 gross = position.shares * exit_px
+                gross_turnover += gross
                 fee = gross * fee_rate
                 net = gross - fee
                 cash += net
@@ -342,6 +396,7 @@ def run_backtest(
             shares = cash / (entry_px * (1 + fee_rate))
             if shares > 0:
                 notional = shares * entry_px
+                gross_turnover += notional
                 fee = notional * fee_rate
                 cash -= notional + fee
                 position = _Position(
@@ -389,17 +444,25 @@ def run_backtest(
     wins = sum(1 for t in trades if t.pnl > 0)
     win_rate_pct = (wins / len(trades) * 100) if trades else 0.0
     exposure_pct = (in_market_days / len(equity_points) * 100) if equity_points else 0.0
+    turnover_pct = (gross_turnover / initial_cash * 100) if initial_cash > 0 else 0.0
+    benchmark_return_pct = _benchmark_return_pct(start_date, end_date)
+    alpha_vs_benchmark_pct = total_return_pct - benchmark_return_pct
 
     metrics = BacktestMetrics(
         initial_cash=round(initial_cash, 2),
         final_equity=round(final_equity, 2),
         total_return_pct=round(total_return_pct, 2),
         annualized_return_pct=round(annualized_return_pct, 2),
+        annualized_volatility_pct=_annualized_volatility_pct(equity_series),
         max_drawdown_pct=_max_drawdown_pct(equity_series),
         sharpe_ratio=_sharpe_ratio(equity_series),
+        sortino_ratio=_sortino_ratio(equity_series),
         win_rate_pct=round(win_rate_pct, 2),
         trades=len(trades),
         exposure_pct=round(exposure_pct, 2),
+        turnover_pct=round(turnover_pct, 2),
+        benchmark_return_pct=round(benchmark_return_pct, 2),
+        alpha_vs_benchmark_pct=round(alpha_vs_benchmark_pct, 2),
     )
 
     return BacktestResponse(

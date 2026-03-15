@@ -274,6 +274,30 @@ async def api_profile_report(profile_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/report/{profile_id}/structured")
+async def api_profile_report_structured(profile_id: str):
+    """Builds a personalized report and returns structured sections for UI consumption."""
+    try:
+        from core.preferences import get_prefs
+        from app.services.report_service import generate_and_save_report
+
+        prefs = get_prefs(profile_id)
+        generated = generate_and_save_report(profile_id, prefs)
+        payload = generated["payload"]
+        return {
+            "profile_id": profile_id,
+            "report_id": generated["report_id"],
+            "created_at": generated["created_at"],
+            "preferences": prefs,
+            "report_config": payload.get("report_config", {}),
+            "sections": payload.get("sections", {}),
+            "files": generated["files"],
+        }
+    except Exception as e:
+        logger.error(f"GET /api/report/{profile_id}/structured failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/reports/{profile_id}")
 async def api_list_reports(profile_id: str):
     """Lists saved reports for a profile."""
@@ -295,6 +319,27 @@ async def api_get_report(profile_id: str, report_id: str):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.error(f"GET /api/reports/{profile_id}/{report_id} failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/reports/{profile_id}/{report_id}/structured")
+async def api_get_report_structured(profile_id: str, report_id: str):
+    """Loads a saved report and returns only the structured report sections."""
+    try:
+        from app.services.report_service import load_saved_report
+
+        payload = load_saved_report(profile_id, report_id)
+        return {
+            "profile_id": profile_id,
+            "report_id": report_id,
+            "created_at": payload.get("created_at"),
+            "report_config": payload.get("report_config", {}),
+            "sections": payload.get("sections", {}),
+        }
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"GET /api/reports/{profile_id}/{report_id}/structured failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

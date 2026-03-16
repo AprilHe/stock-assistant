@@ -19,3 +19,11 @@ prompt_hints:
   - Emphasize trend durability vs late-stage extension risk.
   - State what confirms trend continuation in coming sessions.
 
+# v2 Section 4.1 — data window requirements
+data_windows:
+  signal_lookback_window: "12mo"
+  feature_windows:
+    - "20d"   # SMA20
+    - "50d"   # SMA50 + slope lookback (10-day comparison)
+  min_history_required: "60d"
+

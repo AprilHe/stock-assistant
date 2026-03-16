@@ -5,9 +5,17 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
+class EntryRange(BaseModel):
+    lower_bound: float | None = None
+    upper_bound: float | None = None
+    reference: str = ""
+    notes: list[str] = Field(default_factory=list)
+
+
 class ExecutionPlan(BaseModel):
     ticker: str
     entry_style: str = ""
+    entry_range: EntryRange | None = None
     entry_condition: str = ""
     add_condition: str = ""
     stop_condition: str = ""
@@ -24,6 +32,14 @@ class ProposalSignalSummary(BaseModel):
     agreement_level: str = ""
 
 
+class ProposalValidity(BaseModel):
+    ticker: str
+    status: str = ""
+    is_valid_now: bool = False
+    checked_at: str | None = None
+    reason: str = ""
+
+
 class ProposedAction(BaseModel):
     ticker: str
     action: str
@@ -33,6 +49,7 @@ class ProposedAction(BaseModel):
     conviction: str = ""
     reason: str = ""
     signal_summary: ProposalSignalSummary | None = None
+    proposal_validity: ProposalValidity | None = None
     execution_plan: ExecutionPlan | None = None
 
 

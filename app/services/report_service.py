@@ -6,18 +6,24 @@ import json
 import math
 from datetime import datetime, timedelta, timezone as dt_tz
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Literal
 
+from app.services.pipeline_service import run_pipeline
+from app.renderers.proposal_renderer import (
+    render_market_stock_ideas_markdown,
+    render_strategy_report_markdown,
+    render_strategy_reports_markdown,
+)
 from core.market_data import get_snapshot_for
 from app.services.research_service import (
+    DEFAULT_COMMODITY_UNIVERSE,
     DEFAULT_STOCK_UNIVERSE,
     _is_commodity_ticker,
     _strategy_asset_types,
     build_commodity_summary_response,
     build_global_summary_response,
-    build_screen_response,
     build_watchlist_summary_response,
-    format_screen_response,
 )
 from domain.schemas.report import (
     FeaturedIdeaReport,
@@ -28,11 +34,313 @@ from domain.schemas.report import (
     WatchlistReportItem,
     WatchlistSummaryReport,
 )
+from domain.schemas.signals import PipelineResponse
 
 REPORTS_DIR = Path(__file__).resolve().parents[2] / "reports"
 REPORT_SECTION_OPTIONS = ("watchlist", "market", "commodity")
 REPORT_MODE_OPTIONS = ("summary", "ideas", "summary+ideas")
 PUSH_DETAIL_OPTIONS = ("brief", "detailed", "simple", "full")
+
+
+def _dedupe_preserving_order(values: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        cleaned = str(value).strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        deduped.append(cleaned)
+    return deduped
+
+
+def _watchlist_asset_buckets(
+    watchlist: list[str],
+    strategies: list[str],
+) -> list[tuple[str, list[str], list[str]]]:
+    normalized_watchlist = _dedupe_preserving_order(watchlist)
+    normalized_strategies = _dedupe_preserving_order(strategies or ["breakout"])
+
+    stock_tickers = [ticker for ticker in normalized_watchlist if not _is_commodity_ticker(ticker)]
+    commodity_tickers = [ticker for ticker in normalized_watchlist if _is_commodity_ticker(ticker)]
+    stock_strategies = [strategy for strategy in normalized_strategies if "stock" in _strategy_asset_types(strategy)]
+    commodity_strategies = [
+        strategy for strategy in normalized_strategies
+        if "commodity" in _strategy_asset_types(strategy)
+    ]
+
+    buckets: list[tuple[str, list[str], list[str]]] = []
+    if stock_tickers and stock_strategies:
+        buckets.append(("stock", stock_tickers, stock_strategies))
+    if commodity_tickers and commodity_strategies:
+        buckets.append(("commodity", commodity_tickers, commodity_strategies))
+    return buckets
+
+
+def _watchlist_pipeline_asset_type(watchlist: list[str]) -> str:
+    has_stock = any(not _is_commodity_ticker(ticker) for ticker in watchlist)
+    has_commodity = any(_is_commodity_ticker(ticker) for ticker in watchlist)
+    if has_stock and has_commodity:
+        return "mixed"
+    if has_commodity:
+        return "commodity"
+    return "stock"
+
+
+def build_watchlist_pipeline(
+    profile_id: str,
+    watchlist: list[str],
+    strategies: list[str],
+) -> PipelineResponse:
+    """Run the canonical watchlist pipeline across stock and commodity buckets."""
+    from app.services.signal_service import run_signals
+
+    normalized_watchlist = _dedupe_preserving_order(watchlist)
+    normalized_strategies = _dedupe_preserving_order(strategies or ["breakout"])
+
+    all_signals = []
+    for asset_type, bucket_tickers, bucket_strategies in _watchlist_asset_buckets(
+        normalized_watchlist,
+        normalized_strategies,
+    ):
+        signal_response = run_signals(
+            tickers=bucket_tickers,
+            strategies=bucket_strategies,
+            asset_type=asset_type,
+        )
+        all_signals.extend(signal_response.signals)
+
+    return run_pipeline(
+        tickers=normalized_watchlist,
+        strategies=normalized_strategies,
+        profile_id=profile_id,
+        asset_type=_watchlist_pipeline_asset_type(normalized_watchlist),
+        precomputed_signals=all_signals,
+    )
+
+
+def build_market_pipeline(
+    profile_id: str,
+    strategies: list[str],
+) -> PipelineResponse | None:
+    """Run the canonical market-stock pipeline over the default stock universe."""
+    stock_strategies = [
+        strategy for strategy in _dedupe_preserving_order(strategies or ["breakout"])
+        if "stock" in _strategy_asset_types(strategy)
+    ]
+    if not stock_strategies:
+        return None
+
+    return run_pipeline(
+        tickers=DEFAULT_STOCK_UNIVERSE,
+        strategies=stock_strategies,
+        profile_id=profile_id,
+        asset_type="stock",
+    )
+
+
+def build_commodity_pipeline(
+    profile_id: str,
+    strategies: list[str],
+) -> PipelineResponse | None:
+    """Run the canonical commodity pipeline over the default commodity universe."""
+    commodity_strategies = [
+        strategy for strategy in _dedupe_preserving_order(strategies or ["commodity_macro"])
+        if "commodity" in _strategy_asset_types(strategy)
+    ]
+    if not commodity_strategies:
+        return None
+
+    return run_pipeline(
+        tickers=DEFAULT_COMMODITY_UNIVERSE,
+        strategies=commodity_strategies,
+        profile_id=profile_id,
+        asset_type="commodity",
+    )
+
+
+def build_strategy_reports_from_pipeline(
+    *,
+    pipeline: PipelineResponse,
+    watchlist: list[str],
+    strategies: list[str],
+    top_n: int = 5,
+) -> list[dict]:
+    """Project canonical watchlist pipeline data into per-strategy report sections."""
+    normalized_watchlist = _dedupe_preserving_order(watchlist)
+    normalized_strategies = _dedupe_preserving_order(strategies or ["breakout"])
+
+    candidates_by_ticker = {candidate.ticker: candidate for candidate in pipeline.candidates}
+    syntheses_by_ticker = {synthesis.ticker: synthesis for synthesis in pipeline.signal_syntheses}
+    decisions_by_ticker = {decision.ticker: decision for decision in pipeline.portfolio_decisions}
+    actions_by_ticker = {action.ticker: action for action in pipeline.proposal.proposed_actions}
+
+    reports: list[dict] = []
+    for strategy in normalized_strategies:
+        for asset_type in _strategy_asset_types(strategy):
+            items: list[dict] = []
+            for ticker in normalized_watchlist:
+                if _is_commodity_ticker(ticker) != (asset_type == "commodity"):
+                    continue
+
+                candidate = candidates_by_ticker.get(ticker)
+                action = actions_by_ticker.get(ticker)
+                if candidate is None or action is None:
+                    continue
+
+                strategy_signal = next(
+                    (signal for signal in candidate.strategy_signals if signal.strategy_id == strategy),
+                    None,
+                )
+                if strategy_signal is None:
+                    continue
+
+                synthesis = syntheses_by_ticker.get(ticker)
+                decision = decisions_by_ticker.get(ticker)
+                execution_plan = action.execution_plan
+                reason_parts = [action.reason]
+                if synthesis is not None and synthesis.summary:
+                    reason_parts.append(synthesis.summary)
+
+                items.append(
+                    {
+                        "ticker": ticker,
+                        "action": action.action,
+                        "conviction": action.conviction,
+                        "aggregate_score": candidate.aggregate_score,
+                        "strategy_score": strategy_signal.score_normalized,
+                        "aggregate_confidence": candidate.aggregate_confidence,
+                        "strategy_confidence": strategy_signal.confidence,
+                        "agreement_level": candidate.agreement_level,
+                        "reason": " | ".join(part for part in reason_parts if part),
+                        "proposal_validity": (
+                            action.proposal_validity.model_dump() if action.proposal_validity else None
+                        ),
+                        "execution_plan": execution_plan.model_dump() if execution_plan else None,
+                        "portfolio_decision": decision.model_dump() if decision else None,
+                        "synthesis": synthesis.model_dump() if synthesis is not None else None,
+                    }
+                )
+
+            items.sort(
+                key=lambda item: (item.get("aggregate_score", 0.0), item.get("strategy_score", 0.0)),
+                reverse=True,
+            )
+            reports.append(
+                {
+                    "strategy": strategy,
+                    "asset_type": asset_type,
+                    "generated_at": pipeline.generated_at,
+                    "source": "canonical_pipeline",
+                    "items": items[:top_n],
+                    "status": None if items else "no_actionable_idea",
+                    "reason": None if items else "no candidate for this strategy cleared the canonical pipeline",
+                }
+            )
+
+    return reports
+
+
+def build_telegram_report_text(profile_id: str, prefs: dict) -> str:
+    """Build a concise Telegram report from canonical pipeline-backed sections."""
+    watchlist = prefs["watchlist"]
+    strategies = prefs.get("strategies", ["breakout"])
+    schedule = prefs.get("schedule", "daily")
+    language = prefs.get("language", "en")
+    report_mode = _normalize_report_mode(prefs.get("report_mode", "summary"))
+    report_sections = _normalize_sections(prefs.get("report_sections", ["watchlist"]))
+    detail_level = "detailed" if prefs.get("push_mode", "simple") == "full" else "brief"
+
+    watchlist_pipeline = build_watchlist_pipeline(
+        profile_id=profile_id,
+        watchlist=watchlist,
+        strategies=strategies,
+    )
+
+    sections: list[str] = []
+    if report_mode in {"summary", "summary+ideas"} and "watchlist" in report_sections:
+        sections.append(
+            _render_structured_watchlist_message(
+                build_structured_watchlist_report_from_pipeline(
+                    profile_id=profile_id,
+                    watchlist=watchlist,
+                    strategies=strategies,
+                    pipeline=watchlist_pipeline,
+                ),
+                language=language,
+                detail_level=detail_level,
+            )
+        )
+    if report_mode in {"summary", "summary+ideas"} and "market" in report_sections:
+        market_overview = build_structured_market_overview(
+            profile_id=profile_id,
+            strategies=strategies,
+            schedule=schedule,
+            language=language,
+        )
+        featured_idea = build_structured_featured_idea(
+            profile_id=profile_id,
+            strategies=strategies,
+            schedule=schedule,
+            language=language,
+        )
+        sections.append(
+            _render_structured_market_message(
+                market_overview,
+                language=language,
+                detail_level=detail_level,
+            )
+        )
+        sections.append(
+            _render_structured_featured_idea(
+                featured_idea,
+                language=language,
+                detail_level=detail_level,
+            )
+        )
+    if report_mode in {"summary", "summary+ideas"} and "commodity" in report_sections:
+        sections.append(
+            _commodity_brief_message(
+                detail_level=detail_level,
+                schedule=schedule,
+                language=language,
+            )
+        )
+    if report_mode in {"ideas", "summary+ideas"}:
+        sections.append(
+            render_strategy_reports_markdown(
+                build_strategy_reports_from_pipeline(
+                    pipeline=watchlist_pipeline,
+                    watchlist=watchlist,
+                    strategies=strategies,
+                    top_n=5,
+                )
+            )
+        )
+
+    return "\n\n".join(section for section in sections if section.strip())
+
+
+def build_telegram_ideas_text(
+    *,
+    profile_id: str,
+    watchlist: list[str],
+    strategies: list[str],
+    top_n: int = 5,
+) -> str:
+    """Build Telegram ideas output from canonical strategy reports."""
+    watchlist_pipeline = build_watchlist_pipeline(
+        profile_id=profile_id,
+        watchlist=watchlist,
+        strategies=strategies,
+    )
+    reports = build_strategy_reports_from_pipeline(
+        pipeline=watchlist_pipeline,
+        watchlist=watchlist,
+        strategies=strategies,
+        top_n=top_n,
+    )
+    return render_strategy_reports_markdown(reports)
 
 
 def _score_to_action(score: int) -> str:
@@ -218,61 +526,186 @@ def _price_plan_from_candidate(candidate, last_price: float | None) -> PricePlan
     return _generic_price_plan(candidate, last_price)
 
 
-def build_structured_watchlist_report(
+def _stringify_pipeline_entry_range(entry_range) -> str:
+    if entry_range is None:
+        return "n/a"
+    if isinstance(entry_range, dict):
+        lower_bound = entry_range.get("lower_bound")
+        upper_bound = entry_range.get("upper_bound")
+        if lower_bound is not None and upper_bound is not None:
+            return f"{lower_bound}-{upper_bound}"
+        return entry_range.get("reference") or "n/a"
+    if entry_range.lower_bound is not None and entry_range.upper_bound is not None:
+        return f"{entry_range.lower_bound}-{entry_range.upper_bound}"
+    return entry_range.reference or "n/a"
+
+
+def build_structured_watchlist_report_from_pipeline(
+    profile_id: str,
     watchlist: list[str],
     strategies: list[str],
     top_n: int = 5,
+    pipeline: PipelineResponse | None = None,
 ) -> WatchlistSummaryReport:
-    generated_at = datetime.now(dt_tz.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    candidates = []
-    for strategy in strategies or ["breakout"]:
-        for asset_type in _strategy_asset_types(strategy):
-            scoped_watchlist = [
-                symbol for symbol in watchlist
-                if _is_commodity_ticker(symbol) == (asset_type == "commodity")
-            ]
-            if not scoped_watchlist:
-                continue
-            response = build_screen_response(
-                strategy=strategy,
-                asset_type=asset_type,
-                tickers=scoped_watchlist,
-                top_n=top_n,
-            )
-            candidates.extend(response.candidates)
+    """Build the watchlist section from the canonical pipeline.
 
-    candidates.sort(key=lambda candidate: (candidate.score, candidate.confidence), reverse=True)
-    top = candidates[:top_n]
-    if not top:
+    A legacy fallback is still merged in for symbols that do not yet map
+    cleanly into canonical proposal output. New feature work should extend the
+    canonical path rather than expanding the fallback branch.
+    """
+    pipeline = pipeline or build_watchlist_pipeline(
+        profile_id=profile_id,
+        watchlist=watchlist,
+        strategies=strategies,
+    )
+    syntheses_by_ticker = {
+        synthesis.ticker: synthesis
+        for synthesis in pipeline.signal_syntheses
+    }
+
+    items_by_ticker: dict[str, WatchlistReportItem] = {}
+    for action in pipeline.proposal.proposed_actions:
+        execution_plan = action.execution_plan
+        validity = action.proposal_validity
+        synthesis = syntheses_by_ticker.get(action.ticker)
+        reason_parts = [action.reason]
+        if synthesis is not None and synthesis.summary:
+            reason_parts.append(synthesis.summary)
+        if synthesis is not None and synthesis.key_risks:
+            reason_parts.append(f"risk: {synthesis.key_risks[0]}")
+        reason = " | ".join(part for part in reason_parts if part)
+        if validity is not None:
+            reason = f"{reason} | validity: {validity.status}"
+
+        items_by_ticker[action.ticker] = WatchlistReportItem(
+            ticker=action.ticker,
+            action=action.action,
+            confidence=action.conviction or "",
+            why_now=reason,
+            price_plan=PricePlan(
+                entry_range=_stringify_pipeline_entry_range(
+                    execution_plan.entry_range if execution_plan else None
+                ),
+                ideal_entry=(
+                    execution_plan.entry_range.lower_bound
+                    if execution_plan and execution_plan.entry_range and execution_plan.entry_range.lower_bound is not None
+                    else None
+                ),
+                take_profit_zone=execution_plan.take_profit_condition if execution_plan else "n/a",
+                stop_loss_or_invalidation=execution_plan.stop_condition if execution_plan else "n/a",
+                valid_until=execution_plan.valid_until if execution_plan else action.valid_until,
+                invalidate_if=execution_plan.invalidate_if if execution_plan else [],
+            ),
+        )
+
+    # Price-based fallback for tickers that produced no strategy signal
+    # (e.g. indices like ^GSPC, crypto, or names not at a signal condition).
+    unscreened = [s for s in watchlist if s not in items_by_ticker]
+    if unscreened:
+        fallback_prices = get_snapshot_for(unscreened)
+        for symbol in unscreened:
+            data = fallback_prices.get(symbol) or {}
+            chg = data.get("change_pct")
+            price = data.get("price")
+            if chg is None or data.get("error"):
+                score, action, confidence = 50, "hold", "low"
+                why_now = "price data unavailable — monitoring only"
+            elif chg >= 1.5:
+                score, action, confidence = 62, "buy", "medium"
+                why_now = f"up {chg:+.1f}% today — positive momentum, no specific strategy signal"
+            elif chg <= -1.5:
+                score, action, confidence = 38, "reduce", "medium"
+                why_now = f"down {abs(chg):.1f}% today — caution warranted, no specific strategy signal"
+            else:
+                score, action, confidence = 50, "hold", "low"
+                why_now = f"{chg:+.1f}% today — range-bound, no directional strategy signal"
+            mock = SimpleNamespace(score=score, exit_logic="", evidence=[])
+            items_by_ticker[symbol] = WatchlistReportItem(
+                ticker=symbol,
+                action=action,
+                confidence=confidence,
+                why_now=why_now,
+                price_plan=_generic_price_plan(mock, price),
+            )
+
+    ordered_items = [items_by_ticker[ticker] for ticker in watchlist if ticker in items_by_ticker]
+    if not ordered_items:
         return WatchlistSummaryReport(
-            generated_at=generated_at,
+            generated_at=pipeline.generated_at,
             status="no_actionable_idea",
             reason="signal quality is mixed and no setup cleared the minimum threshold",
         )
 
-    prices = get_snapshot_for([candidate.symbol for candidate in top])
-    items = []
-    for candidate in top:
-        price = (prices.get(candidate.symbol) or {}).get("price")
-        items.append(
-            WatchlistReportItem(
-                ticker=candidate.symbol,
-                action=_score_to_action(candidate.score),
-                confidence=_score_to_confidence(candidate.score),
-                why_now=(candidate.evidence[0] if candidate.evidence else candidate.entry_logic),
-                price_plan=_price_plan_from_candidate(candidate, price),
-            )
+    return WatchlistSummaryReport(
+        generated_at=pipeline.generated_at,
+        items=ordered_items[:top_n],
+    )
+
+
+def _featured_stock_from_market_pipeline(
+    pipeline: PipelineResponse | None,
+) -> FeaturedStockIdea | None:
+    if pipeline is None:
+        return None
+
+    syntheses_by_ticker = {
+        synthesis.ticker: synthesis
+        for synthesis in pipeline.signal_syntheses
+    }
+    candidates_by_ticker = {
+        candidate.ticker: candidate
+        for candidate in pipeline.candidates
+    }
+
+    for action in pipeline.proposal.proposed_actions:
+        if action.action not in {"buy", "add"}:
+            continue
+
+        candidate = candidates_by_ticker.get(action.ticker)
+        if candidate is None or candidate.aggregate_score < 0.70:
+            continue
+
+        synthesis = syntheses_by_ticker.get(action.ticker)
+        execution_plan = action.execution_plan
+        reason_parts = []
+        if action.reason:
+            reason_parts.append(action.reason)
+        if synthesis is not None and synthesis.summary:
+            reason_parts.append(synthesis.summary)
+        reason = " | ".join(reason_parts) or "canonical proposal remains actionable"
+
+        return FeaturedStockIdea(
+            ticker=action.ticker,
+            action=action.action,
+            why_now=reason,
+            price_plan=PricePlan(
+                entry_range=_stringify_pipeline_entry_range(
+                    execution_plan.entry_range if execution_plan else None
+                ),
+                ideal_entry=(
+                    execution_plan.entry_range.lower_bound
+                    if execution_plan and execution_plan.entry_range and execution_plan.entry_range.lower_bound is not None
+                    else None
+                ),
+                take_profit_zone=execution_plan.take_profit_condition if execution_plan else "n/a",
+                stop_loss_or_invalidation=execution_plan.stop_condition if execution_plan else "n/a",
+                valid_until=execution_plan.valid_until if execution_plan else action.valid_until,
+                invalidate_if=execution_plan.invalidate_if if execution_plan else [],
+            ),
         )
-    return WatchlistSummaryReport(generated_at=generated_at, items=items)
+
+    return None
 
 
 def build_structured_market_overview(
     strategies: list[str],
+    profile_id: str = "default",
     schedule: str = "daily",
     language: str = "en",
 ) -> MarketOverviewReport:
     generated_at = datetime.now(dt_tz.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     summary_response = build_global_summary_response(schedule=schedule, language=language)
+    market_pipeline = build_market_pipeline(profile_id=profile_id, strategies=strategies)
     snapshot = summary_response.market_data
     lookup = {point.ticker: point for point in snapshot.values()}
 
@@ -321,18 +754,7 @@ def build_structured_market_overview(
 
     featured_stock = None
     if featured_sector is None:
-        ideas = _top_market_stock_ideas(strategies or ["breakout"], top_n=1)
-        if ideas:
-            top = ideas[0]
-            symbol = str(top.get("symbol", "")).strip()
-            if symbol and int(top.get("score", 0)) >= 70:
-                price = (get_snapshot_for([symbol]).get(symbol) or {}).get("price")
-                featured_stock = FeaturedStockIdea(
-                    ticker=symbol,
-                    action=_score_to_action(int(top.get("score", 0))),
-                    why_now=((top.get("evidence") or [top.get("entry_logic", "setup confirmation")])[0]),
-                    price_plan=_price_plan_from_candidate(type("Candidate", (), top), price),
-                )
+        featured_stock = _featured_stock_from_market_pipeline(market_pipeline)
 
     if featured_sector is None and featured_stock is None:
         return MarketOverviewReport(
@@ -354,11 +776,17 @@ def build_structured_market_overview(
 
 def build_structured_featured_idea(
     strategies: list[str],
+    profile_id: str = "default",
     schedule: str = "daily",
     language: str = "en",
 ) -> FeaturedIdeaReport:
     generated_at = datetime.now(dt_tz.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    overview = build_structured_market_overview(strategies=strategies, schedule=schedule, language=language)
+    overview = build_structured_market_overview(
+        profile_id=profile_id,
+        strategies=strategies,
+        schedule=schedule,
+        language=language,
+    )
     if overview.featured_stock is not None:
         return FeaturedIdeaReport(
             idea_kind="stock",
@@ -409,7 +837,7 @@ def _render_structured_watchlist_message(
     language: str = "en",
     detail_level: str = "brief",
 ) -> str:
-    date_str = datetime.now(dt_tz.utc).strftime("%Y-%m-%d")
+    date_str = str(report.generated_at or datetime.now(dt_tz.utc).isoformat())[:10]
     if report.status == "no_actionable_idea" or not report.items:
         if language == "zh":
             return (
@@ -432,12 +860,28 @@ def _render_structured_watchlist_message(
         "",
     ]
     for item in report.items:
+        validity_hint = ""
+        if "validity:" in item.why_now:
+            validity_hint = item.why_now.split("validity:", 1)[-1].strip()
+
         if language == "zh":
             lines.append(f"{item.ticker} | {item.action.upper()} | 置信度 {item.confidence}")
             lines.append(f"- 逻辑: {item.why_now}")
+            if not show_price_plan and item.price_plan.entry_range:
+                lines.append(f"- 建议区间: {item.price_plan.entry_range}")
+            if not show_price_plan and item.price_plan.valid_until:
+                lines.append(f"- 有效期至: {item.price_plan.valid_until}")
+            if validity_hint:
+                lines.append(f"- 当前状态: {validity_hint}")
         else:
             lines.append(f"{item.ticker} | {item.action.upper()} | confidence {item.confidence}")
             lines.append(f"- Why now: {item.why_now}")
+            if not show_price_plan and item.price_plan.entry_range:
+                lines.append(f"- Entry range: {item.price_plan.entry_range}")
+            if not show_price_plan and item.price_plan.valid_until:
+                lines.append(f"- Valid until: {item.price_plan.valid_until}")
+            if validity_hint:
+                lines.append(f"- Status: {validity_hint}")
         if show_price_plan:
             lines.extend(_render_price_plan_text(item.price_plan, language=language))
         lines.append("")
@@ -637,6 +1081,12 @@ def _watchlist_brief_message(
     schedule: str = "daily",
     language: str = "en",
 ) -> str:
+    """Legacy watchlist brief message helper.
+
+    This helper is retained only for compatibility during the migration to the
+    canonical renderer-backed watchlist/report flow and is no longer the
+    preferred path for new product work.
+    """
     def _signal_from_score(score: int) -> tuple[str, str]:
         if language == "zh":
             if score >= 65:
@@ -680,26 +1130,24 @@ def _watchlist_brief_message(
             return "One-line takeaway: stay defensive and avoid momentum chasing."
         return "One-line takeaway: mixed tape; wait for cleaner confirmation."
 
-    candidates = []
-    for strategy in strategies or ["breakout"]:
-        for asset_type in _strategy_asset_types(strategy):
-            scoped_watchlist = [
-                symbol for symbol in watchlist
-                if _is_commodity_ticker(symbol) == (asset_type == "commodity")
-            ]
-            if not scoped_watchlist:
-                continue
-            response = build_screen_response(
-                strategy=strategy,
-                asset_type=asset_type,
-                tickers=scoped_watchlist,
-                top_n=3,
-            )
-            candidates.extend(response.candidates)
-
-    candidates.sort(key=lambda candidate: (candidate.score, candidate.confidence), reverse=True)
+    watchlist_pipeline = build_watchlist_pipeline(
+        profile_id="watchlist-brief",
+        watchlist=watchlist,
+        strategies=strategies,
+    )
+    strategy_reports = build_strategy_reports_from_pipeline(
+        pipeline=watchlist_pipeline,
+        watchlist=watchlist,
+        strategies=strategies,
+        top_n=5 if detail_level == "detailed" else 3,
+    )
+    items = [item for report in strategy_reports for item in report.get("items", [])]
+    items.sort(
+        key=lambda item: (item.get("aggregate_score", 0.0), item.get("strategy_score", 0.0)),
+        reverse=True,
+    )
     top_n = 5 if detail_level == "detailed" else 3
-    top = candidates[:top_n]
+    top = items[:top_n]
     date_str = datetime.now(dt_tz.utc).strftime("%Y-%m-%d")
 
     if not top:
@@ -720,10 +1168,11 @@ def _watchlist_brief_message(
         return "\n".join(lines)
 
     counts = {"buy": 0, "hold": 0, "reduce": 0}
-    for candidate in top:
-        if candidate.score >= 65:
+    for item in top:
+        score = round(float(item.get("aggregate_score", 0.0)) * 100)
+        if score >= 65:
             counts["buy"] += 1
-        elif candidate.score >= 45:
+        elif score >= 45:
             counts["hold"] += 1
         else:
             counts["reduce"] += 1
@@ -753,14 +1202,16 @@ def _watchlist_brief_message(
             "",
         ]
 
-    for candidate in top:
-        reason = candidate.evidence[0] if candidate.evidence else candidate.entry_logic
-        icon, signal = _signal_from_score(candidate.score)
+    for item in top:
+        score = round(float(item.get("aggregate_score", 0.0)) * 100)
+        synthesis = item.get("synthesis") or {}
+        reason = item.get("reason") or synthesis.get("summary") or "wait for cleaner confirmation"
+        icon, signal = _signal_from_score(score)
         if language == "zh":
-            lines.append(f"{candidate.symbol} {icon} {signal} | 评分 {candidate.score}")
+            lines.append(f"{item.get('ticker')} {icon} {signal} | 评分 {score}")
             lines.append(f"{reason}")
         else:
-            lines.append(f"{candidate.symbol} {icon} {signal} | Score {candidate.score}")
+            lines.append(f"{item.get('ticker')} {icon} {signal} | Score {score}")
             lines.append(f"{reason}")
         lines.append("")
 
@@ -772,37 +1223,65 @@ def _watchlist_brief_message(
     return "\n".join(lines).strip()
 
 
-def _top_market_stock_ideas(strategies: list[str], top_n: int = 5) -> list[dict]:
-    merged: dict[str, object] = {}
-    for strategy in (strategies or ["breakout"]):
-        try:
-            if "stock" not in _strategy_asset_types(strategy):
-                continue
-            response = build_screen_response(
-                strategy=strategy,
-                asset_type="stock",
-                tickers=DEFAULT_STOCK_UNIVERSE,
-                top_n=top_n,
-            )
-        except Exception:
-            continue
-        for candidate in response.candidates:
-            current = merged.get(candidate.symbol)
-            if current is None:
-                merged[candidate.symbol] = candidate
-                continue
-            if (candidate.score, candidate.confidence) > (current.score, current.confidence):
-                merged[candidate.symbol] = candidate
+def _top_market_stock_ideas(profile_id: str, strategies: list[str], top_n: int = 5) -> list[dict]:
+    pipeline = build_market_pipeline(profile_id=profile_id, strategies=strategies)
+    if pipeline is None:
+        return []
 
-    ranked = sorted(
-        merged.values(),
-        key=lambda candidate: (candidate.score, candidate.confidence),
-        reverse=True,
-    )
-    return [candidate.model_dump() for candidate in ranked[:top_n]]
+    syntheses_by_ticker = {
+        synthesis.ticker: synthesis
+        for synthesis in pipeline.signal_syntheses
+    }
+    candidates_by_ticker = {
+        candidate.ticker: candidate
+        for candidate in pipeline.candidates
+    }
+    decisions_by_ticker = {
+        decision.ticker: decision
+        for decision in pipeline.portfolio_decisions
+    }
+
+    ideas: list[dict] = []
+    for action in pipeline.proposal.proposed_actions:
+        candidate = candidates_by_ticker.get(action.ticker)
+        if candidate is None:
+            continue
+        synthesis = syntheses_by_ticker.get(action.ticker)
+        decision = decisions_by_ticker.get(action.ticker)
+        execution_plan = action.execution_plan
+        reason = action.reason
+        if synthesis is not None and synthesis.summary:
+            reason = f"{reason} | {synthesis.summary}" if reason else synthesis.summary
+        ideas.append(
+            {
+                "ticker": action.ticker,
+                "action": action.action,
+                "conviction": action.conviction,
+                "reason": reason,
+                "signal_summary": action.signal_summary.model_dump() if action.signal_summary else None,
+                "proposal_validity": (
+                    action.proposal_validity.model_dump() if action.proposal_validity else None
+                ),
+                "execution_plan": execution_plan.model_dump() if execution_plan else None,
+                "portfolio_decision": decision.model_dump() if decision else None,
+                "candidate": candidate.model_dump(),
+                "synthesis": synthesis.model_dump() if synthesis is not None else None,
+                "strategy": str(candidate.metadata.get("primary_strategy_id", "")),
+                "score": round(candidate.aggregate_score * 100),
+                "confidence": candidate.aggregate_confidence,
+                "symbol": action.ticker,
+                "entry_logic": execution_plan.entry_condition if execution_plan else action.reason,
+                "evidence": synthesis.key_supports if synthesis is not None else [],
+                "valid_until": action.valid_until,
+            }
+        )
+
+    ideas.sort(key=lambda item: (item.get("score", 0), item.get("confidence", 0)), reverse=True)
+    return ideas[:top_n]
 
 
 def _market_brief_message(
+    profile_id: str = "default",
     detail_level: Literal["brief", "detailed"] = "brief",
     strategies: list[str] | None = None,
     schedule: str = "daily",
@@ -869,7 +1348,7 @@ def _market_brief_message(
         leaders = ", ".join(name for name, _ in sorted(sector_moves, key=lambda x: x[1], reverse=True)[:3]) or "n/a"
         laggards = ", ".join(name for name, _ in sorted(sector_moves, key=lambda x: x[1])[:2]) or "n/a"
 
-        idea = _top_market_stock_ideas(strategies or ["breakout"], top_n=1)
+        idea = _top_market_stock_ideas(profile_id, strategies or ["breakout"], top_n=1)
         stock_idea_line = "n/a"
         if idea:
             top = idea[0]
@@ -1011,12 +1490,17 @@ def _commodity_brief_message(
     language: str = "en",
 ) -> str:
     summary = build_commodity_summary_response(schedule=schedule, language=language)
-    candidates = build_screen_response(
-        strategy="commodity_macro",
-        asset_type="commodity",
-        tickers=None,
+    commodity_pipeline = build_commodity_pipeline(
+        profile_id="commodity-brief",
+        strategies=["commodity_macro"],
+    )
+    strategy_reports = build_strategy_reports_from_pipeline(
+        pipeline=commodity_pipeline,
+        watchlist=DEFAULT_COMMODITY_UNIVERSE,
+        strategies=["commodity_macro"],
         top_n=3 if detail_level == "brief" else 5,
-    ).candidates
+    ) if commodity_pipeline is not None else []
+    strategy_items = strategy_reports[0]["items"] if strategy_reports else []
     snapshot = summary.market_data
     lookup = {point.ticker: point for point in snapshot.values()}
 
@@ -1064,11 +1548,13 @@ def _commodity_brief_message(
             lines.extend(["", "Top Commodity Setups"])
         else:
             lines.extend(["", "重点机会"])
-        if not candidates:
+        if not strategy_items:
             lines.append("- 暂无高质量商品机会。")
-        for idx, candidate in enumerate(candidates, 1):
-            reason = candidate.evidence[0] if candidate.evidence else candidate.entry_logic
-            lines.append(f"{idx}. {candidate.symbol} | 评分 {candidate.score} | {reason}")
+        for idx, item in enumerate(strategy_items, 1):
+            lines.append(
+                f"{idx}. {item.get('ticker')} | 综合评分 {round(float(item.get('aggregate_score', 0.0)) * 100)} | "
+                f"{item.get('reason') or '等待更清晰确认'}"
+            )
         return "\n".join(lines)
 
     snapshot_line = _bounded_section_text(
@@ -1105,15 +1591,18 @@ def _commodity_brief_message(
         lines.extend(["", "Top Commodity Setups"])
     else:
         lines.extend(["", "Top ideas"])
-    if not candidates:
+    if not strategy_items:
         lines.append("- No strong commodity setups right now.")
-    for idx, candidate in enumerate(candidates, 1):
-        reason = candidate.evidence[0] if candidate.evidence else candidate.entry_logic
-        lines.append(f"{idx}. {candidate.symbol} | score {candidate.score} | {reason}")
+    for idx, item in enumerate(strategy_items, 1):
+        lines.append(
+            f"{idx}. {item.get('ticker')} | aggregate score {round(float(item.get('aggregate_score', 0.0)) * 100)} | "
+            f"{item.get('reason') or 'wait for cleaner confirmation'}"
+        )
     return "\n".join(lines)
 
 
 def build_push_messages(
+    profile_id: str,
     watchlist: list[str],
     strategies: list[str],
     report_sections: list[str] | None,
@@ -1124,7 +1613,11 @@ def build_push_messages(
     sections = _normalize_sections(report_sections)
     normalized_detail = _normalize_push_detail(detail_level)
     messages = [_render_structured_watchlist_message(
-        build_structured_watchlist_report(watchlist, strategies),
+        build_structured_watchlist_report_from_pipeline(
+            profile_id=profile_id,
+            watchlist=watchlist,
+            strategies=strategies,
+        ),
         language=language,
         detail_level=normalized_detail,
     )]
@@ -1132,6 +1625,7 @@ def build_push_messages(
         messages.append(
             _render_structured_market_message(
                 build_structured_market_overview(
+                    profile_id=profile_id,
                     strategies=strategies,
                     schedule=schedule,
                     language=language,
@@ -1143,6 +1637,7 @@ def build_push_messages(
         messages.append(
             _render_structured_featured_idea(
                 build_structured_featured_idea(
+                    profile_id=profile_id,
                     strategies=strategies,
                     schedule=schedule,
                     language=language,
@@ -1154,6 +1649,7 @@ def build_push_messages(
     if "commodity" in sections:
         messages.append(
             _commodity_brief_message(
+                profile_id=profile_id,
                 detail_level=_normalize_push_detail(detail_level),
                 schedule=schedule,
                 language=language,
@@ -1178,16 +1674,27 @@ def build_detailed_report_payload(profile_id: str, prefs: dict) -> dict:
     strategy_reports = []
     include_summary = report_mode in {"summary", "summary+ideas"}
     include_ideas = report_mode in {"ideas", "summary+ideas"}
+    watchlist_pipeline = build_watchlist_pipeline(
+        profile_id=profile_id,
+        watchlist=watchlist,
+        strategies=strategies,
+    )
+    structured_watchlist_report = build_structured_watchlist_report_from_pipeline(
+        profile_id=profile_id,
+        watchlist=watchlist,
+        strategies=strategies,
+        pipeline=watchlist_pipeline,
+    )
 
     if include_summary and "watchlist" in report_sections:
-        watchlist_summary = build_watchlist_summary_response(
-            watchlist=watchlist,
-            schedule=schedule,
+        watchlist_summary = _render_structured_watchlist_message(
+            structured_watchlist_report,
             language=language,
-        ).summary
+            detail_level="brief",
+        )
     if include_summary and "market" in report_sections:
         market_summary = build_global_summary_response(schedule=schedule, language=language).summary
-        market_stock_ideas = _top_market_stock_ideas(strategies, top_n=5)
+        market_stock_ideas = _top_market_stock_ideas(profile_id, strategies, top_n=5)
     if include_summary and "commodity" in report_sections:
         commodity_summary = build_commodity_summary_response(
             schedule=schedule,
@@ -1195,33 +1702,33 @@ def build_detailed_report_payload(profile_id: str, prefs: dict) -> dict:
         ).summary
 
     if include_ideas:
-        for strategy in strategies:
-            for asset_type in _strategy_asset_types(strategy):
-                strategy_watchlist = [
-                    symbol for symbol in watchlist
-                    if _is_commodity_ticker(symbol) == (asset_type == "commodity")
-                ]
-                if not strategy_watchlist:
-                    continue
-                strategy_reports.append(
-                    build_screen_response(
-                        strategy=strategy,
-                        asset_type=asset_type,
-                        tickers=strategy_watchlist,
-                        top_n=5,
-                    ).model_dump()
-                )
+        strategy_reports = build_strategy_reports_from_pipeline(
+            pipeline=watchlist_pipeline,
+            watchlist=watchlist,
+            strategies=strategies,
+            top_n=5,
+        )
 
     created_at = datetime.now(dt_tz.utc).isoformat()
     report_id = _report_id()
-    structured_watchlist = build_structured_watchlist_report(watchlist, strategies).model_dump()
+    structured_watchlist = structured_watchlist_report.model_dump()
     structured_market = (
-        build_structured_market_overview(strategies=strategies, schedule=schedule, language=language).model_dump()
+        build_structured_market_overview(
+            profile_id=profile_id,
+            strategies=strategies,
+            schedule=schedule,
+            language=language,
+        ).model_dump()
         if "market" in report_sections
         else None
     )
     structured_featured = (
-        build_structured_featured_idea(strategies=strategies, schedule=schedule, language=language).model_dump()
+        build_structured_featured_idea(
+            profile_id=profile_id,
+            strategies=strategies,
+            schedule=schedule,
+            language=language,
+        ).model_dump()
         if "market" in report_sections
         else None
     )
@@ -1237,6 +1744,9 @@ def build_detailed_report_payload(profile_id: str, prefs: dict) -> dict:
         "sections": {
             "watchlist_summary": watchlist_summary,
             "watchlist_structured": structured_watchlist,
+            "signal_syntheses": [synthesis.model_dump() for synthesis in watchlist_pipeline.signal_syntheses],
+            "portfolio_decisions": [decision.model_dump() for decision in watchlist_pipeline.portfolio_decisions],
+            "proposal": watchlist_pipeline.proposal.model_dump(),
             "market_summary": market_summary,
             "market_overview_structured": structured_market,
             "featured_idea_structured": structured_featured,
@@ -1301,6 +1811,7 @@ def render_detailed_report_markdown(payload: dict) -> str:
         if sections.get("featured_idea_structured")
         else None
     )
+    signal_syntheses = sections.get("signal_syntheses") or []
 
     if report_mode in {"summary", "summary+ideas"}:
         if "watchlist" in report_sections:
@@ -1311,6 +1822,14 @@ def render_detailed_report_markdown(payload: dict) -> str:
             )
             if rendered_watchlist:
                 lines.extend(["", "## Watchlist Summary", rendered_watchlist])
+            if signal_syntheses:
+                lines.extend(["", "## Signal Synthesis"])
+                for synthesis in signal_syntheses:
+                    summary = synthesis.get("summary", "")
+                    risks = synthesis.get("key_risks") or []
+                    lines.append(f"- {synthesis.get('ticker')}: {summary}")
+                    if risks:
+                        lines.append(f"  Risk: {risks[0]}")
         if "market" in report_sections:
             rendered_market = (
                 _render_structured_market_message(market_structured)
@@ -1324,15 +1843,9 @@ def render_detailed_report_markdown(payload: dict) -> str:
             market_ideas = sections.get("market_stock_ideas") or []
             lines.extend(["", "## Market Stock Ideas"])
             if market_ideas:
-                for idx, candidate in enumerate(market_ideas, 1):
-                    evidence = (candidate.get("evidence") or [])
-                    reason = evidence[0] if evidence else candidate.get("entry_logic", "setup confirmation")
-                    lines.append(
-                        f"{idx}. {candidate.get('symbol')} | {candidate.get('strategy')} | "
-                        f"score {candidate.get('score')} | {reason}"
-                    )
+                lines.append(render_market_stock_ideas_markdown(market_ideas))
             else:
-                lines.append("No high-conviction market stock setups today.")
+                lines.append(render_market_stock_ideas_markdown([]))
         if "commodity" in report_sections and sections.get("commodity_summary"):
             lines.extend(["", "## Commodity Summary", sections["commodity_summary"]])
 
@@ -1341,24 +1854,11 @@ def render_detailed_report_markdown(payload: dict) -> str:
             lines.extend(
                 [
                     "",
-                    f"## Strategy: {report['strategy']}",
-                    format_screen_response_obj(report),
+                    f"## Strategy: {report['strategy']} ({report.get('asset_type', 'stock')})",
+                    render_strategy_report_markdown(report),
                 ]
             )
     return "\n".join(lines).strip() + "\n"
-
-
-def format_screen_response_obj(payload: dict) -> str:
-    class _Obj:
-        def __init__(self, data: dict):
-            self.strategy = data["strategy"]
-            self.asset_type = data["asset_type"]
-            self.candidates = []
-            for item in data.get("candidates", []):
-                candidate = type("Candidate", (), item)
-                self.candidates.append(candidate)
-
-    return format_screen_response(_Obj(payload))
 
 
 def save_detailed_report(profile_id: str, payload: dict) -> dict:

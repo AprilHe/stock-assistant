@@ -20,3 +20,11 @@ prompt_hints:
   - Separate healthy pullback from trend reversal.
   - State where pullback thesis fails.
 
+# v2 Section 4.1 — data window requirements
+data_windows:
+  signal_lookback_window: "6mo"
+  feature_windows:
+    - "20d"   # SMA20 pullback reference
+    - "50d"   # trend baseline (SMA50)
+  min_history_required: "60d"
+

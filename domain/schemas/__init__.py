@@ -2,10 +2,12 @@
 
 from .portfolio import Holding, PortfolioDecision, PortfolioSnapshot, UserProfile
 from .proposal import (
+    EntryRange,
     ExecutionPlan,
     ProposalMarketContext,
     ProposalResponse,
     ProposalSignalSummary,
+    ProposalValidity,
     ProposedAction,
 )
 from .report import (
@@ -36,6 +38,10 @@ from .research import (
 from .signals import (
     AggregatedCandidate,
     CandidateSignalView,
+    NormalizationProfile,
+    NORMALIZATION_PROFILES,
+    PipelineResponse,
+    SignalPipelineResponse,
     SignalRunRequest,
     SignalRunResponse,
     SignalSynthesis,
@@ -48,6 +54,9 @@ __all__ = [
     "BacktestResponse",
     "BacktestTrade",
     "CandidateSignalView",
+    "EntryRange",
+    "NormalizationProfile",
+    "NORMALIZATION_PROFILES",
     "EquityPoint",
     "ExecutionPlan",
     "FeaturedIdeaReport",
@@ -60,12 +69,15 @@ __all__ = [
     "PortfolioDecision",
     "PricePlan",
     "PortfolioSnapshot",
+    "PipelineResponse",
     "ProposalMarketContext",
     "ProposalResponse",
     "ProposalSignalSummary",
+    "ProposalValidity",
     "ProposedAction",
     "ScreenCandidate",
     "ScreenResponse",
+    "SignalPipelineResponse",
     "SignalRunRequest",
     "SignalRunResponse",
     "SignalSynthesis",

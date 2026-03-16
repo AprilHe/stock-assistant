@@ -20,3 +20,11 @@ prompt_hints:
   - Distinguish valid breakout from failed breakout risk.
   - Mention extension risk if move is already stretched.
 
+# v2 Section 4.1 — data window requirements
+data_windows:
+  signal_lookback_window: "6mo"
+  feature_windows:
+    - "20d"   # rolling high for breakout level; SMA20
+    - "50d"   # trend baseline (SMA50)
+  min_history_required: "60d"
+

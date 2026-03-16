@@ -20,3 +20,11 @@ prompt_hints:
   - Distinguish healthy reversion setup from structural breakdown.
   - Explicitly mention invalidation level.
 
+
+# v2 Section 4.1 — data window requirements
+data_windows:
+  signal_lookback_window: "6mo"
+  feature_windows:
+    - "20d"   # Bollinger band (SMA20 ± 2σ)
+    - "14d"   # RSI(14)
+  min_history_required: "30d"

@@ -8,9 +8,13 @@ rendered from a JSON response from the LLM.
 """
 
 import json
+import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone as dt_tz
+from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 import yfinance as yf
 from litellm import completion
@@ -97,6 +101,90 @@ def _call_llm(prompt: str) -> str:
     return response.choices[0].message.content.strip()
 
 
+def _strip_json_fences(raw: str) -> str:
+    return (
+        raw.strip()
+        .removeprefix("```json")
+        .removeprefix("```")
+        .removesuffix("```")
+        .strip()
+    )
+
+
+def _parse_json_object(raw: str) -> dict | None:
+    cleaned = _strip_json_fences(raw)
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(parsed, dict):
+        return parsed
+    return None
+
+
+def _validate_dashboard_json(parsed: dict) -> bool:
+    """Return True if the dashboard JSON has the expected top-level structure."""
+    tickers = parsed.get("tickers")
+    if not isinstance(tickers, list):
+        return False
+    for item in tickers:
+        if not isinstance(item, dict):
+            return False
+        if not all(k in item for k in ("symbol", "signal", "score", "one_line")):
+            return False
+    return True
+
+
+def _validate_ticker_analysis_json(parsed: dict) -> bool:
+    """Return True if the ticker analysis JSON has the expected structure."""
+    required = ("proposal", "confidence", "summary", "reasoning")
+    if not all(k in parsed for k in required):
+        return False
+    if not isinstance(parsed.get("reasoning"), list):
+        return False
+    return True
+
+
+def _call_llm_json_with_retries(
+    prompt: str,
+    *,
+    retries: int = 2,
+    validator: Callable[[dict], bool] | None = None,
+) -> dict | None:
+    """Call the LLM for JSON output, retrying with a stricter repair prompt if needed.
+
+    Args:
+        prompt: The prompt to send on the first attempt.
+        retries: Number of additional attempts after the first (default 2 → 3 total).
+        validator: Optional callable that receives the parsed dict and returns True if
+                   the structure is acceptable. A failed validation counts as a parse
+                   failure and triggers another retry with a repair prompt.
+    """
+    last_cleaned = ""
+    last_error = ""
+    for attempt in range(retries + 1):
+        raw = _call_llm(prompt if attempt == 0 else (
+            "Return valid raw JSON only. Do not include markdown fences, commentary, or explanations.\n\n"
+            f"Original task:\n{prompt}\n\n"
+            f"Previous invalid output:\n{last_cleaned}\n\n"
+            f"Error: {last_error}"
+        ))
+        cleaned = _strip_json_fences(raw)
+        last_cleaned = cleaned
+        parsed = _parse_json_object(raw)
+        if parsed is None:
+            last_error = "output is not a valid JSON object"
+            logger.warning("LLM JSON parse failed (attempt %d/%d): %s", attempt + 1, retries + 1, last_error)
+            continue
+        if validator is not None and not validator(parsed):
+            last_error = "parsed JSON does not match expected schema"
+            logger.warning("LLM JSON schema validation failed (attempt %d/%d): %s", attempt + 1, retries + 1, last_error)
+            continue
+        return parsed
+    logger.warning("LLM JSON retries exhausted after %d attempts. Falling back.", retries + 1)
+    return None
+
+
 # ── News helpers ───────────────────────────────────────────────────────────────
 
 def _news_age_label(published_at_str: str, language: str = "en") -> str:
@@ -147,19 +235,12 @@ def _render_dashboard(
     Falls back to raw LLM text if JSON parsing fails.
     """
     # Strip accidental markdown fences the LLM might add
-    cleaned = (
-        llm_json_str.strip()
-        .removeprefix("```json")
-        .removeprefix("```")
-        .removesuffix("```")
-        .strip()
-    )
-
-    try:
-        parsed = json.loads(cleaned)
-        tickers = parsed["tickers"]
-    except (json.JSONDecodeError, KeyError):
+    parsed = _parse_json_object(llm_json_str)
+    if parsed is None:
         return llm_json_str  # graceful fallback
+    tickers = parsed.get("tickers")
+    if not isinstance(tickers, list):
+        return llm_json_str
 
     emoji_map = _SIGNAL_EMOJI_ZH if language == "zh" else _SIGNAL_EMOJI_EN
 
@@ -169,7 +250,9 @@ def _render_dashboard(
         sig = t.get("signal", "")
         counts[sig] = counts.get(sig, 0) + 1
 
-    date_str = generated_at.strftime("%Y-%m-%d")
+    # Use the actual last-trading-session date for the header, not the run date.
+    # This ensures weekend/holiday runs don't mislabel the report.
+    date_str = _as_of_date_str(market_data)
     time_str = generated_at.strftime("%Y-%m-%d %H:%M")
     n = len(tickers)
 
@@ -243,7 +326,67 @@ def _render_dashboard(
     return "\n".join(lines)
 
 
+def _fallback_dashboard_json(market_data: dict, language: str = "en") -> dict:
+    tickers: list[dict] = []
+    for name, data in market_data.items():
+        if name == "_as_of" or not isinstance(data, dict):
+            continue
+        symbol = data.get("ticker", name)
+        change = data.get("change_pct")
+        if change is None or data.get("error"):
+            score = 50
+            one_line = "data unavailable" if language == "en" else "数据不可用"
+            risk = "missing live price data" if language == "en" else "缺少实时行情"
+        else:
+            change = float(change)
+            if change >= 1.5:
+                score = 62
+                one_line = "positive short-term momentum" if language == "en" else "短线动能偏强"
+                risk = "move may already be extended" if language == "en" else "涨幅可能已扩张"
+            elif change <= -1.5:
+                score = 38
+                one_line = "weak short-term tape" if language == "en" else "短线走势偏弱"
+                risk = "selling pressure still active" if language == "en" else "抛压仍在持续"
+            else:
+                score = 50
+                one_line = "range-bound and waiting" if language == "en" else "区间震荡等待确认"
+                risk = "no clear directional edge" if language == "en" else "缺少清晰方向优势"
+
+        if language == "zh":
+            signal = "买入" if score >= 60 else "观望" if score >= 35 else "卖出"
+            validity = "3天内" if score >= 60 else "本周内"
+        else:
+            signal = "Buy" if score >= 60 else "Hold" if score >= 35 else "Sell"
+            validity = "3 days" if score >= 60 else "This week"
+
+        tickers.append(
+            {
+                "symbol": symbol,
+                "signal": signal,
+                "score": score,
+                "one_line": one_line,
+                "validity": validity,
+                "risk": risk,
+            }
+        )
+
+    return {"tickers": tickers}
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
+
+def _as_of_date_str(market_data: dict) -> str:
+    """Return the trading date to display in report headers.
+
+    Uses the '_as_of' key injected by market_data.py (the actual last trading
+    session date). Falls back to today's UTC date only if no data key exists,
+    so weekend/holiday runs don't mislabel the report.
+    """
+    as_of = market_data.get("_as_of")
+    if as_of:
+        return str(as_of)
+    return datetime.now(dt_tz.utc).strftime("%Y-%m-%d")
+
 
 def generate_market_summary(
     market_data: dict,
@@ -255,9 +398,11 @@ def generate_market_summary(
     Builds a structured decision dashboard from price data + news.
     The LLM returns a JSON object; Python renders it into a formatted message.
     """
-    # Format price data
+    # Format price data (skip the internal _as_of metadata key)
     price_lines = []
     for name, data in market_data.items():
+        if name == "_as_of":
+            continue
         if data.get("error"):
             price_lines.append(f"  {name}: data unavailable")
         else:
@@ -286,8 +431,12 @@ def generate_market_summary(
         score_guide = "Buy=60-100, Hold=35-65, Sell=0-40"
         lang_instruction = "All text fields must be in English."
 
-    # Build ticker list for the prompt (use ticker symbols from market_data)
-    ticker_symbols = [v.get("ticker", k) for k, v in market_data.items() if not v.get("error")]
+    # Build ticker list for the prompt (use ticker symbols from market_data, skip metadata key)
+    ticker_symbols = [
+        v.get("ticker", k)
+        for k, v in market_data.items()
+        if k != "_as_of" and isinstance(v, dict) and not v.get("error")
+    ]
 
     prompt = f"""You are a financial analyst. Analyze the market data and news below.
 Output raw JSON only — no markdown, no code fences, no explanation.
@@ -319,8 +468,9 @@ Validity guide: {validity_guide}
 Output only the JSON object, nothing else."""
 
     generated_at = datetime.now(dt_tz.utc)
-    raw = _call_llm(prompt)
-    return _render_dashboard(raw, market_data, generated_at, schedule, language) + DISCLAIMER
+    parsed = _call_llm_json_with_retries(prompt, retries=2, validator=_validate_dashboard_json)
+    raw_json = json.dumps(parsed if parsed is not None else _fallback_dashboard_json(market_data, language=language))
+    return _render_dashboard(raw_json, market_data, generated_at, schedule, language) + DISCLAIMER
 
 
 def generate_us_market_narrative(
@@ -334,9 +484,13 @@ def generate_us_market_narrative(
     Uses extended market data (indices + sector ETFs + VIX) for richer context.
     Returns a Markdown-formatted report string.
     """
-    # Build price table lines
+    # Build price table lines (skip internal metadata key)
     price_lines = []
     for name, data in market_data.items():
+        if name == "_as_of":
+            continue
+        if not isinstance(data, dict):
+            continue
         if data.get("error"):
             price_lines.append(f"  {name} ({data.get('ticker', '')}): data unavailable")
         else:
@@ -351,7 +505,7 @@ def generate_us_market_narrative(
         age = _news_age_label(article.get("published_at", ""), language)
         news_lines.append(f"  {i}. {age} {article['title']}")
 
-    date_str = datetime.now(dt_tz.utc).strftime("%Y-%m-%d")
+    date_str = _as_of_date_str(market_data)
 
     if language == "zh":
         prompt = f"""你是一位专业的美股市场分析师。根据以下市场数据和新闻，撰写一份当日美股大盘复盘报告。
@@ -477,6 +631,10 @@ def generate_commodity_narrative(
     """
     price_lines = []
     for name, data in market_data.items():
+        if name == "_as_of":
+            continue
+        if not isinstance(data, dict):
+            continue
         if data.get("error"):
             price_lines.append(f"  {name} ({data.get('ticker', '')}): data unavailable")
         else:
@@ -491,7 +649,7 @@ def generate_commodity_narrative(
         age = _news_age_label(article.get("published_at", ""), language)
         news_lines.append(f"  {i}. {age} {article['title']}")
 
-    date_str = datetime.now(dt_tz.utc).strftime("%Y-%m-%d")
+    date_str = _as_of_date_str(market_data)
 
     if language == "zh":
         prompt = f"""你是一位专业的大宗商品市场分析师。根据以下价格数据和新闻，撰写当日大宗商品市场综述。
@@ -703,18 +861,16 @@ Return JSON with this exact structure:
 Keep each reasoning/risk/trigger item <=14 words.
 Be factual and balanced. Do not include investment advice disclaimers in JSON."""
 
-    raw = _call_llm(prompt)
-    cleaned = _clean_json_text(raw)
-    try:
-        parsed = json.loads(cleaned)
+    parsed = _call_llm_json_with_retries(prompt, retries=2, validator=_validate_ticker_analysis_json)
+    if parsed is not None:
         return _normalize_ticker_analysis(parsed)
-    except (json.JSONDecodeError, TypeError):
+    else:
         return {
             "proposal": "Hold",
             "horizon": "weeks_to_months",
             "confidence": 50,
             "summary": "Model returned unstructured output. Please retry for a cleaner structured analysis.",
-            "reasoning": [cleaned[:220] if cleaned else "No model output available."],
+            "reasoning": ["No valid structured analysis was produced."],
             "risks": ["Model output format mismatch."],
             "triggers": ["Retry analysis.", "Review price action manually."],
         }

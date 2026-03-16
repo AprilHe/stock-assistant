@@ -19,3 +19,11 @@ prompt_hints:
   - Report breakout quality and participation quality separately.
   - Mention failed-breakout and whipsaw risk explicitly.
 
+
+# v2 Section 4.1 — data window requirements
+data_windows:
+  signal_lookback_window: "6mo"
+  feature_windows:
+    - "20d"   # Donchian upper band (entry)
+    - "10d"   # Donchian lower band (exit)
+  min_history_required: "25d"

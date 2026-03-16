@@ -84,6 +84,8 @@ _EVALUATORS = {
 def _to_market_points(raw: dict) -> dict[str, MarketPoint]:
     points: dict[str, MarketPoint] = {}
     for key, val in raw.items():
+        if not isinstance(val, dict):
+            continue
         points[key] = MarketPoint(
             ticker=val.get("ticker", key),
             price=val.get("price"),
@@ -278,7 +280,12 @@ def build_breakout_screen_response(
     tickers: list[str] | None = None,
     top_n: int = 5,
 ) -> ScreenResponse:
-    """Backward-compatible wrapper."""
+    """Backward-compatible wrapper for the pre-v2 breakout screener.
+
+    Prefer `build_screen_response()` only when you explicitly need the legacy
+    `ScreenResponse` contract. New product work should prefer the canonical
+    pipeline / proposal helpers instead.
+    """
     return build_screen_response(
         strategy="breakout",
         asset_type=asset_type,
@@ -293,6 +300,14 @@ def build_screen_response(
     tickers: list[str] | None = None,
     top_n: int = 5,
 ) -> ScreenResponse:
+    """Legacy score-first screener response builder.
+
+    .. deprecated::
+        Sole caller is GET /api/screen. New callers should use the canonical
+        pipeline via pipeline_service (POST /api/signals/run or
+        POST /api/proposals/build), which preserves agreement/conflict
+        handling, execution plans, and proposal validity.
+    """
     normalized_strategy = strategy.lower().strip()
     normalized_asset_type = asset_type.lower().strip()
     strategy_detail = get_strategy(normalized_strategy, capability="screen")
@@ -313,27 +328,27 @@ def build_screen_response(
         if _is_commodity_ticker(symbol) == (normalized_asset_type == "commodity")
     ]
 
-    python_impl = str(strategy_detail.get("python_impl", "")).strip()
-    evaluator = _EVALUATORS.get(python_impl)
-    if evaluator is None:
-        raise ValueError(f"Strategy '{normalized_strategy}' has no executable screener implementation yet.")
+    from app.services.signal_service import run_signals
+
+    signal_response = run_signals(
+        tickers=universe,
+        strategies=[normalized_strategy],
+        asset_type=normalized_asset_type,
+    )
 
     candidates: list[ScreenCandidate] = []
-    for symbol in universe:
-        signal = evaluator(symbol)
-        if not signal:
-            continue
+    for signal in signal_response.signals:
         candidates.append(
             ScreenCandidate(
-                symbol=symbol,
+                symbol=signal.ticker,
                 asset_type=normalized_asset_type,
                 strategy=normalized_strategy,
-                direction="long",
-                score=signal.score,
+                direction=signal.direction,
+                score=signal.score_raw,
                 confidence=signal.confidence,
-                holding_period="days_to_weeks",
-                entry_logic=signal.entry_logic,
-                exit_logic=signal.exit_logic,
+                holding_period=signal.horizon,
+                entry_logic=signal.entry_logic or "",
+                exit_logic=signal.exit_logic or "",
                 risk_flags=signal.risk_flags,
                 evidence=signal.evidence,
             )
@@ -351,56 +366,3 @@ def build_screen_response(
     )
 
 
-def format_screen_response(response: ScreenResponse) -> str:
-    if not response.candidates:
-        return f"No {response.strategy} candidates right now in your universe."
-
-    lines = [f"{response.strategy.title()} ideas ({response.asset_type})"]
-    for idx, candidate in enumerate(response.candidates, 1):
-        risk = ", ".join(candidate.risk_flags) if candidate.risk_flags else "none"
-        lines.append(
-            f"{idx}. {candidate.symbol} | score {candidate.score} | conf {candidate.confidence:.2f}\n"
-            f"   Entry: {candidate.entry_logic}\n"
-            f"   Exit: {candidate.exit_logic}\n"
-            f"   Risks: {risk}"
-        )
-    return "\n\n".join(lines)
-
-
-def build_personalized_report(
-    watchlist: list[str],
-    strategies: list[str],
-    report_mode: str,
-    schedule: str = "daily",
-    language: str = "en",
-    top_n: int = 5,
-) -> str:
-    sections: list[str] = []
-
-    if report_mode in {"summary", "summary+ideas"}:
-        summary_response = build_watchlist_summary_response(
-            watchlist=watchlist,
-            schedule=schedule,
-            language=language,
-        )
-        sections.append(summary_response.summary)
-
-    if report_mode in {"ideas", "summary+ideas"}:
-        normalized_strategies = strategies or ["breakout"]
-        for strategy in normalized_strategies:
-            for strategy_asset_type in _strategy_asset_types(strategy):
-                strategy_watchlist = [
-                    symbol for symbol in watchlist
-                    if _is_commodity_ticker(symbol) == (strategy_asset_type == "commodity")
-                ]
-                if not strategy_watchlist:
-                    continue
-                screen_response = build_screen_response(
-                    strategy=strategy,
-                    asset_type=strategy_asset_type,
-                    tickers=strategy_watchlist,
-                    top_n=top_n,
-                )
-                sections.append(format_screen_response(screen_response))
-
-    return "\n\n".join(section for section in sections if section.strip())

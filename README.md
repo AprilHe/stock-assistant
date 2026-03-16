@@ -47,6 +47,32 @@ AI-powered market analysis that delivers pre-market reports and trade ideas ever
 - Screens your watchlist for setups using configurable strategies
 - Delivers to your **Telegram**, a **web dashboard**, a **CLI**, or **GitHub Actions artifacts**
 
+### Current Architecture Status
+
+- The project now has a canonical deterministic pipeline:
+  `signals -> candidate merge -> signal synthesis -> portfolio decisions -> execution proposal`
+- Canonical portfolio state is stored separately from messaging preferences:
+  - preferences live in SQLite in `core/preferences.py`
+  - portfolio profile / snapshot live in SQLite in `core/portfolio_store.py`
+- The pipeline is available through:
+  - `POST /api/pipeline/run`
+  - `POST /api/proposals/build`
+  - `GET /api/proposals/latest`
+  - structured report generation
+  - watchlist push / Telegram watchlist summaries
+  - Telegram `/report` and `/ideas`
+- Presentation is increasingly renderer-driven:
+  - canonical markdown renderers now live in `app/renderers/proposal_renderer.py`
+  - report markdown, market stock ideas, strategy reports, and Telegram proposal text now reuse those renderers
+- Legacy compatibility paths still exist, but are now explicitly marked:
+  - `build_screen_response()` / `format_screen_response()` remain for older score-first consumers
+  - `build_personalized_report()` remains as a compatibility wrapper, but now delegates to canonical pipeline helpers
+  - `build_structured_watchlist_report()` remains as a migration fallback for symbols that do not yet map cleanly into canonical proposal output
+- Remaining work is focused on:
+  - AI reliability for structured outputs
+  - continuing to retire legacy score-only presentation helpers
+  - expanding regression coverage
+
 ---
 
 ## Start Here
@@ -315,7 +341,16 @@ All endpoints available on the running local server.
 | `GET` | `/api/analyze/{ticker}` | AI analysis for one ticker. Optional: `?strategy=emotion_cycle` |
 | `GET` | `/api/strategies` | List strategies. Optional: `?capability=analysis\|screen\|backtest` |
 | `GET` | `/api/strategies/{id}` | Full strategy config + documentation |
-| `GET` | `/api/screen` | Screener. Params: `strategy`, `asset_type`, `top_n`, `tickers` |
+| `GET` | `/api/screen` | Legacy-compatible screener view. Params: `strategy`, `asset_type`, `top_n`, `tickers` |
+| `GET` | `/api/candidates/latest` | Recommended canonical replacement for saved-profile/watchlist candidate views |
+| `GET` | `/api/profile/{profile_id}` | Get the canonical portfolio user profile |
+| `PUT` | `/api/profile/{profile_id}` | Update the canonical portfolio user profile |
+| `GET` | `/api/portfolio/{profile_id}` | Get the canonical portfolio snapshot |
+| `PUT` | `/api/portfolio/{profile_id}` | Update the canonical portfolio snapshot |
+| `POST` | `/api/signals/run` | Run the v2 signal pipeline and return merged candidates |
+| `POST` | `/api/pipeline/run` | Canonical deterministic pipeline output |
+| `POST` | `/api/proposals/build` | Canonical proposal output for a request payload |
+| `GET` | `/api/proposals/latest` | Canonical proposal output from saved profile preferences |
 | `GET` | `/api/backtest` | Daily backtest. Params: `ticker`, `strategy`, `start_date`, `end_date`, cost params |
 | `GET` | `/api/report/{profile_id}` | Generate + save a full report for a profile |
 | `GET` | `/api/reports/{profile_id}` | List saved reports |
@@ -325,6 +360,13 @@ All endpoints available on the running local server.
 | `PUT` | `/api/preferences/{profile_id}` | Update profile preferences |
 
 Interactive docs: `http://localhost:8000/docs`
+
+`/api/screen` note:
+- This endpoint is kept for backward compatibility with older score-first consumers.
+- It is no longer the recommended entry point for new product work.
+- Prefer `/api/candidates/latest` as the first replacement for watchlist/profile-driven UI.
+- Prefer `/api/pipeline/run` when the client needs a custom ticker universe and full pipeline output.
+- Prefer `/api/proposals/build` or `/api/proposals/latest` when only proposal output is needed.
 
 ---
 
@@ -336,6 +378,7 @@ Interactive docs: `http://localhost:8000/docs`
 |---------|-------------|
 | `/start` | Welcome message and command reference |
 | `/report` | Full AI dashboard for your watchlist |
+| `/fullreport` | Full saved markdown report for your watchlist |
 | `/summary` | Global market overview (indices, commodities, crypto) |
 | `/analyze TICKER` | Deep-dive on one ticker, e.g. `/analyze AAPL` |
 | `/ideas [strategy] [asset_type] [top_n]` | Ranked trade ideas, e.g. `/ideas commodity_macro commodity 5` |
@@ -357,8 +400,12 @@ Interactive docs: `http://localhost:8000/docs`
 | `/pushtime HH:MM` | Push time in 24h local time, e.g. `/pushtime 08:30` |
 | `/sections watchlist,market,commodity` | Which sections are included in scheduled pushes |
 | `/strategy breakout,pullback` | Default strategies used for screening |
+| `/pushmode simple\|full` | Scheduled push detail level |
 | `/reportmode summary\|ideas\|summary+ideas` | What watchlist reports contain |
 | `/language en\|zh` | Report language |
+| `/risk conservative\|moderate\|aggressive` | Portfolio risk profile used by the canonical proposal flow |
+| `/maxpos N` | Max single-position limit, e.g. `5` for 5% |
+| `/horizon swing\|day\|longterm` | Preferred holding horizon |
 
 ---
 
@@ -412,24 +459,36 @@ stock-assistant/
 ├── requirements.txt
 ├── .env.example
 ├── scripts/
-│   └── run_report.py             # Standalone CLI — used by GitHub Actions and cron
+│   ├── run_report.py             # Standalone CLI — used by GitHub Actions and cron
+│   └── validate_v2_pipeline.py   # Validation helper for the v2 canonical pipeline
 ├── app/
+│   ├── renderers/
+│   │   └── proposal_renderer.py  # Canonical markdown renderers for proposals/reports
 │   └── services/
-│       ├── research_service.py   # Shared orchestration (API, bot, CLI)
-│       └── report_service.py     # Report composition, persistence, push messages
+│       ├── research_service.py   # Market summaries, analysis, and legacy-compatible APIs
+│       ├── report_service.py     # Report composition, persistence, push messages
+│       ├── signal_service.py     # Strategy signal execution
+│       ├── candidate_merge_service.py   # Multi-strategy candidate aggregation
+│       ├── signal_synthesis.py   # Per-candidate synthesis layer
+│       ├── portfolio_engine.py   # Portfolio-aware decision engine
+│       ├── execution_planner.py  # Proposal/execution plan generation
+│       └── proposal_service.py   # Canonical proposal and latest-candidate helpers
 ├── core/
 │   ├── market_data.py            # yfinance price fetching
 │   ├── news.py                   # NewsAPI with 1-hour cache
 │   ├── ai_analysis.py            # LiteLLM prompt building + LLM calls
 │   ├── strategy_registry.py      # Loads YAML + MD strategy definitions
 │   ├── scheduler.py              # APScheduler per-user push jobs
-│   └── preferences.py            # Per-user preference store (JSON)
+│   ├── preferences.py            # Per-user preference store (SQLite + legacy JSON migration)
+│   └── portfolio_store.py        # Canonical portfolio profile/snapshot store (SQLite)
+├── domain/schemas/               # Pydantic schemas for signals, proposals, reports, portfolio
 ├── strategies/                   # Strategy definitions (YAML + Markdown)
-├── research/strategies/          # Per-strategy screener implementations
 ├── backtesting/engine.py         # Deterministic daily backtest engine
 ├── channels/telegram/bot.py      # Telegram command handlers
-├── data/preferences.json         # Persisted user preferences
+├── data/preferences.db           # Persisted user preferences
+├── data/portfolio.db             # Persisted portfolio profiles and snapshots
 ├── reports/<profile_id>/         # Saved reports (auto-created)
+├── tests/                        # Regression coverage for the v2 pipeline and API/bot surfaces
 └── web/index.html                # Dashboard frontend
 
 .github/

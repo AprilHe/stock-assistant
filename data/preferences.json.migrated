@@ -1,0 +1,25 @@
+{
+  "6635097909": {
+    "watchlist": [
+      "^GSPC",
+      "^IXIC",
+      "BTC-USD"
+    ],
+    "schedule": "daily"
+  },
+  "web-default": {
+    "watchlist": [
+      "^GSPC",
+      "^IXIC",
+      "BTC-USD"
+    ],
+    "strategies": [
+      "breakout"
+    ],
+    "report_mode": "summary",
+    "schedule": "daily",
+    "timezone": "UTC",
+    "push_time": "08:00",
+    "language": "en"
+  }
+}

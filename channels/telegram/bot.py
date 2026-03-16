@@ -16,6 +16,9 @@ Telegram bot commands:
   /timezone ZONE      — set your timezone (e.g. Asia/Shanghai)
   /pushtime HH:MM     — set push time in 24h local time (e.g. 09:30)
   /language LANG      — set report language: en | zh
+  /risk LEVEL         — set risk profile: conservative | moderate | aggressive
+  /maxpos N           — set max single position size (e.g. 5 for 5%)
+  /horizon STYLE      — set preferred horizon: swing | day | longterm
 
 Runs in a background thread so it doesn't block FastAPI's event loop.
 """
@@ -32,6 +35,7 @@ from core.preferences import (
     set_report_sections, set_push_mode,
     REPORT_MODE_OPTIONS, REPORT_SECTION_OPTIONS, SCHEDULE_OPTIONS, STRATEGY_OPTIONS, PUSH_MODE_OPTIONS,
 )
+from core.portfolio_store import get_user_profile, save_user_profile
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +85,12 @@ def _parse_ideas_args(args: list[str]) -> tuple[str, str, int]:
         top_n = int(args[2])
 
     return strategy, asset_type, top_n
+
+
+def _parse_pct_arg(arg: str) -> float:
+    """Parse '5', '5%', or '0.05' → 0.05 (decimal fraction)."""
+    val = float(arg.strip().rstrip("%"))
+    return val / 100.0 if val > 1.0 else val
 
 
 def _parse_strategy_args(args: list[str]) -> list[str]:
@@ -146,16 +156,11 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Fetching data for: {', '.join(watchlist)}..."
     )
     try:
-        from app.services.research_service import build_personalized_report
+        from app.services.report_service import build_telegram_report_text
 
-        result = build_personalized_report(
-            watchlist=watchlist,
-            strategies=prefs.get("strategies", ["breakout"]),
-            report_mode=prefs.get("report_mode", "summary"),
-            schedule=prefs["schedule"],
-            language=prefs["language"],
-        )
-        await update.message.reply_text(result)
+        result = build_telegram_report_text(chat_id, prefs)
+        for chunk in _chunk_text(result):
+            await update.message.reply_text(chunk)
     except Exception as e:
         logger.error("/report failed for %s: %s", chat_id, e)
         await update.message.reply_text(f"Error generating report: {e}")
@@ -228,32 +233,32 @@ async def ideas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("Screening ideas...")
     try:
-        from app.services.research_service import (
-            build_personalized_report,
-            build_screen_response,
-            format_screen_response,
-        )
+        from app.services.report_service import build_telegram_ideas_text
 
         if context.args:
             strategy, asset_type, top_n = _parse_ideas_args(context.args)
-            result = build_screen_response(
-                strategy=strategy,
-                asset_type=asset_type,
-                tickers=watchlist,
+            scoped_watchlist = [
+                symbol for symbol in watchlist
+                if symbol.endswith("=F") == (asset_type == "commodity")
+            ]
+            result = build_telegram_ideas_text(
+                profile_id=chat_id,
+                watchlist=scoped_watchlist,
+                strategies=[strategy],
                 top_n=top_n,
             )
-            await update.message.reply_text(format_screen_response(result))
+            for chunk in _chunk_text(result):
+                await update.message.reply_text(chunk)
             return
 
-        result = build_personalized_report(
+        result = build_telegram_ideas_text(
+            profile_id=chat_id,
             watchlist=watchlist,
             strategies=prefs.get("strategies", ["breakout"]),
-            report_mode="ideas",
-            schedule=prefs["schedule"],
-            language=prefs["language"],
             top_n=5,
         )
-        await update.message.reply_text(result)
+        for chunk in _chunk_text(result):
+            await update.message.reply_text(chunk)
     except ValueError as e:
         await update.message.reply_text(
             f"{e}\nUsage: /ideas [strategy] [asset_type] [top_n]"
@@ -525,6 +530,91 @@ async def language_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Choose from: en | zh")
 
 
+# ── Profile commands ────────────────────────────────────────────────────────────
+
+_RISK_OPTIONS = ("conservative", "moderate", "aggressive")
+_HORIZON_OPTIONS = ("swing", "day", "longterm")
+
+
+async def risk_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Set or view risk profile. /risk [conservative|moderate|aggressive]"""
+    chat_id = str(update.effective_chat.id)
+    profile = get_user_profile(chat_id)
+
+    if not context.args:
+        await update.message.reply_text(
+            f"Current risk profile: {profile.risk_profile}\n\n"
+            "Usage: /risk conservative | moderate | aggressive"
+        )
+        return
+
+    value = context.args[0].lower()
+    if value not in _RISK_OPTIONS:
+        await update.message.reply_text(
+            f"Invalid value. Choose from: {' | '.join(_RISK_OPTIONS)}"
+        )
+        return
+
+    profile.risk_profile = value
+    save_user_profile(profile)
+    await update.message.reply_text(f"Risk profile set to: {value}")
+
+
+async def maxpos_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Set or view max single position size. /maxpos [1-20]"""
+    chat_id = str(update.effective_chat.id)
+    profile = get_user_profile(chat_id)
+
+    if not context.args:
+        pct = round(profile.max_single_position * 100, 1)
+        await update.message.reply_text(
+            f"Current max single position: {pct}%\n\n"
+            "Usage: /maxpos [1\u201320]\n"
+            "  Examples: /maxpos 5  or  /maxpos 0.05"
+        )
+        return
+
+    try:
+        value = _parse_pct_arg(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Invalid number. Example: /maxpos 5")
+        return
+
+    if not (0.01 <= value <= 0.20):
+        await update.message.reply_text("Value must be between 1% and 20%.")
+        return
+
+    profile.max_single_position = value
+    save_user_profile(profile)
+    await update.message.reply_text(
+        f"Max single position set to: {round(value * 100, 1)}%"
+    )
+
+
+async def horizon_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Set or view preferred trading horizon. /horizon [swing|day|longterm]"""
+    chat_id = str(update.effective_chat.id)
+    profile = get_user_profile(chat_id)
+
+    if not context.args:
+        await update.message.reply_text(
+            f"Current horizon: {profile.preferred_horizon}\n\n"
+            "Usage: /horizon swing | day | longterm"
+        )
+        return
+
+    value = context.args[0].lower()
+    if value not in _HORIZON_OPTIONS:
+        await update.message.reply_text(
+            f"Invalid value. Choose from: {' | '.join(_HORIZON_OPTIONS)}"
+        )
+        return
+
+    profile.preferred_horizon = value
+    save_user_profile(profile)
+    await update.message.reply_text(f"Preferred horizon set to: {value}")
+
+
 # ── Bot runner ─────────────────────────────────────────────────────────────────
 
 def run_bot(token: str):
@@ -555,6 +645,9 @@ def run_bot(token: str):
         app.add_handler(CommandHandler("timezone", timezone_cmd))
         app.add_handler(CommandHandler("pushtime", pushtime_cmd))
         app.add_handler(CommandHandler("language", language_cmd))
+        app.add_handler(CommandHandler("risk", risk_cmd))
+        app.add_handler(CommandHandler("maxpos", maxpos_cmd))
+        app.add_handler(CommandHandler("horizon", horizon_cmd))
 
         logger.info("Telegram bot starting (polling)...")
         async with app:

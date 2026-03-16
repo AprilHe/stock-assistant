@@ -227,6 +227,7 @@ def main() -> None:
         from app.services.report_service import build_push_messages
 
         telegram_messages = build_push_messages(
+            profile_id="github-actions",
             watchlist=watchlist,
             strategies=strategies,
             report_sections=sections,

@@ -63,6 +63,7 @@ def _send_report_for(chat_id: str):
     try:
         generate_and_save_report(chat_id, prefs)
         messages = build_push_messages(
+            profile_id=chat_id,
             watchlist=watchlist,
             strategies=strategies,
             report_sections=report_sections,

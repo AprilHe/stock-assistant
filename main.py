@@ -8,11 +8,13 @@ import os
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
+
+from domain.schemas.signals import SignalPipelineResponse, SignalRunRequest
 
 load_dotenv()
 
@@ -70,6 +72,43 @@ class PreferencesUpdateRequest(BaseModel):
     timezone: str
     push_time: str
     push_mode: str = "simple"
+
+
+class PipelineRunRequest(BaseModel):
+    profile_id: str = "default"
+    tickers: list[str]
+    strategies: list[str] = []
+    asset_type: str = "stock"
+
+
+class UserProfileUpdateRequest(BaseModel):
+    risk_profile: str = "moderate"
+    target_invested_ratio: float = 0.7
+    max_single_position: float = 0.08
+    max_new_position_size: float = 0.03
+    max_sector_exposure: float = 0.25
+    max_weekly_turnover: float = 0.3
+    allow_shorting: bool = False
+    allow_options: bool = False
+    preferred_horizon: str = "swing"
+    restricted_tickers: list[str] = []
+    preferred_sectors: list[str] = []
+    avoid_sectors: list[str] = []
+
+
+class HoldingUpdateRequest(BaseModel):
+    ticker: str
+    weight: float
+    sector: str = ""
+    beta_bucket: str | None = None
+
+
+class PortfolioSnapshotUpdateRequest(BaseModel):
+    cash: float = 0.0
+    equity_value: float = 0.0
+    current_invested_ratio: float = 0.0
+    holdings: list[HoldingUpdateRequest] = []
+    sector_exposure: dict[str, float] = {}
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -146,15 +185,30 @@ async def api_market():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# DEPRECATED: legacy score-first endpoint. New callers should use POST /api/signals/run
+# or POST /api/proposals/build via the canonical pipeline.
 @app.get("/api/screen")
 async def api_screen(
     strategy: str = "breakout",
     asset_type: str = "stock",
     top_n: int = 5,
     tickers: str = "",
+    response: Response = None,
 ):
     """
-    Returns ranked daily/swing candidates by strategy.
+    Legacy-compatible score-first screener view.
+
+    This endpoint is retained so older clients can keep consuming the
+    historical `ScreenResponse` contract. Internally it now reuses canonical
+    signal adapters, but it still returns the pre-v2 score-first shape.
+
+    New UI/client work should prefer canonical endpoints instead:
+    - use `/api/candidates/latest` as the recommended drop-in replacement for
+      saved-profile/watchlist views
+    - use `/api/pipeline/run` for custom universes that need the full pipeline
+    - use `/api/proposals/build` or `/api/proposals/latest` when only proposal
+      output is needed
+
     Optional query params:
       - strategy=<strategy_id from /api/strategies?capability=screen>
       - asset_type=stock|commodity
@@ -163,6 +217,10 @@ async def api_screen(
     """
     try:
         from app.services.research_service import build_screen_response
+
+        if response is not None:
+            response.headers["X-Stock-Assistant-Endpoint-Status"] = "legacy-compatible"
+            response.headers["X-Stock-Assistant-Replacement"] = "/api/candidates/latest"
 
         parsed_tickers = [t.strip() for t in tickers.split(",") if t.strip()] if tickers else None
         return build_screen_response(
@@ -175,6 +233,220 @@ async def api_screen(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"GET /api/screen failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+_ALL_STRATEGIES = [
+    "breakout",
+    "pullback",
+    "trend_following",
+    "mean_reversion",
+    "donchian_breakout",
+    "commodity_macro",
+]
+
+
+@app.get("/api/profile/{profile_id}")
+async def api_get_user_profile(profile_id: str):
+    """Returns the canonical portfolio user profile."""
+    try:
+        from core.portfolio_store import get_user_profile
+
+        return get_user_profile(profile_id).model_dump()
+    except Exception as e:
+        logger.error(f"GET /api/profile/{profile_id} failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/profile/{profile_id}")
+async def api_update_user_profile(profile_id: str, payload: UserProfileUpdateRequest):
+    """Upserts the canonical portfolio user profile."""
+    try:
+        from core.portfolio_store import save_user_profile
+        from domain.schemas.portfolio import UserProfile
+
+        profile = UserProfile(profile_id=profile_id, **payload.model_dump())
+        return save_user_profile(profile).model_dump()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"PUT /api/profile/{profile_id} failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/portfolio/{profile_id}")
+async def api_get_portfolio_snapshot(profile_id: str):
+    """Returns the canonical portfolio snapshot for a profile."""
+    try:
+        from core.portfolio_store import get_portfolio_snapshot
+
+        return get_portfolio_snapshot(profile_id).model_dump()
+    except Exception as e:
+        logger.error(f"GET /api/portfolio/{profile_id} failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/portfolio/{profile_id}")
+async def api_update_portfolio_snapshot(profile_id: str, payload: PortfolioSnapshotUpdateRequest):
+    """Upserts the canonical portfolio snapshot for a profile."""
+    try:
+        from core.portfolio_store import save_portfolio_snapshot
+        from domain.schemas.portfolio import Holding, PortfolioSnapshot
+
+        snapshot = PortfolioSnapshot(
+            cash=payload.cash,
+            equity_value=payload.equity_value,
+            current_invested_ratio=payload.current_invested_ratio,
+            holdings=[Holding(**holding.model_dump()) for holding in payload.holdings],
+            sector_exposure=payload.sector_exposure,
+        )
+        return save_portfolio_snapshot(profile_id, snapshot).model_dump()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"PUT /api/portfolio/{profile_id} failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/pipeline/run")
+async def api_pipeline_run(payload: PipelineRunRequest):
+    """
+    Runs the canonical deterministic pipeline:
+    signals -> candidate merge -> portfolio decisions -> execution proposal.
+
+    Request body (JSON):
+      {
+        "profile_id": "default",
+        "tickers": ["AAPL", "NVDA"],
+        "strategies": ["breakout", "pullback"],
+        "asset_type": "stock"
+      }
+    """
+    try:
+        from app.services.pipeline_service import run_pipeline
+
+        if not payload.tickers:
+            raise ValueError("tickers list must not be empty")
+
+        strategies = payload.strategies or _ALL_STRATEGIES
+        response = run_pipeline(
+            tickers=payload.tickers,
+            strategies=strategies,
+            profile_id=payload.profile_id,
+            asset_type=payload.asset_type,
+        )
+        return response.model_dump()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"POST /api/pipeline/run failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/proposals/build")
+async def api_proposals_build(payload: PipelineRunRequest):
+    """Build the canonical proposal response for a ticker list and profile."""
+    try:
+        from app.services.proposal_service import build_proposal
+
+        if not payload.tickers:
+            raise ValueError("tickers list must not be empty")
+
+        strategies = payload.strategies or _ALL_STRATEGIES
+        proposal = build_proposal(
+            tickers=payload.tickers,
+            strategies=strategies,
+            profile_id=payload.profile_id,
+            asset_type=payload.asset_type,
+        )
+        return proposal.model_dump()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"POST /api/proposals/build failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/proposals/latest")
+async def api_proposals_latest(profile_id: str = "default"):
+    """Build the latest canonical proposal from persisted user preferences."""
+    try:
+        from app.services.proposal_service import build_latest_proposal
+
+        proposal = build_latest_proposal(profile_id)
+        return proposal.model_dump()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"GET /api/proposals/latest failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/candidates/latest")
+async def api_candidates_latest(profile_id: str = "default"):
+    """Canonical latest candidates + proposal view for a saved profile."""
+    try:
+        from app.services.proposal_service import build_latest_candidates
+
+        pipeline = build_latest_candidates(profile_id)
+        return pipeline.model_dump()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"GET /api/candidates/latest failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/signals/run")
+async def api_signals_run(payload: SignalRunRequest):
+    """
+    v2 signal pipeline: run one or more strategies on a ticker list, then merge
+    and rank the results into per-ticker AggregatedCandidates.
+
+    Request body (JSON):
+      {
+        "tickers":    ["AAPL", "NVDA"],          // required, at least one
+        "strategies": ["breakout", "pullback"],   // optional — defaults to all 6
+        "asset_type": "stock"                     // optional — "stock" | "commodity"
+      }
+
+    Response:
+      {
+        "generated_at":      "<ISO-8601>",
+        "tickers_requested": [...],
+        "strategies_run":    [...],
+        "asset_type":        "stock",
+        "signals":           [ <StrategySignal>, ... ],
+        "candidates":        [ <AggregatedCandidate ranked desc by score>, ... ]
+      }
+    """
+    try:
+        from app.services.signal_service import run_signals
+        from app.services.candidate_merge_service import merge_signals
+
+        strategies = payload.strategies or _ALL_STRATEGIES
+        if not payload.tickers:
+            raise ValueError("tickers list must not be empty")
+
+        run_result = run_signals(
+            tickers=payload.tickers,
+            strategies=strategies,
+            asset_type=payload.asset_type,
+        )
+        candidates = merge_signals(run_result.signals)
+
+        return SignalPipelineResponse(
+            generated_at=run_result.generated_at,
+            tickers_requested=payload.tickers,
+            strategies_run=strategies,
+            asset_type=payload.asset_type,
+            signals=run_result.signals,
+            candidates=candidates,
+        ).model_dump()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"POST /api/signals/run failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

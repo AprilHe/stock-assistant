@@ -298,6 +298,21 @@
         <div class="glass rounded-3xl p-6">
           <div class="flex items-center justify-between mb-4">
             <div>
+              <h2 class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-400">Latest Candidates</h2>
+              <p class="mt-1 text-sm text-slate-500">Live canonical pipeline view from saved watchlist preferences.</p>
+            </div>
+            <button onclick="loadLatestCandidates()" id="candidates-btn" class="btn-secondary rounded-xl px-4 py-2 text-sm transition hover:bg-white/10">
+              Refresh
+            </button>
+          </div>
+          <div id="latest-candidates-box" class="min-h-36 rounded-2xl border border-white/10 bg-slate-950/40 p-5 text-sm leading-relaxed text-slate-300">
+            <span class="text-slate-500">Load or save a profile to preview canonical candidates and proposal state.</span>
+          </div>
+        </div>
+
+        <div class="glass rounded-3xl p-6">
+          <div class="flex items-center justify-between mb-4">
+            <div>
               <h2 class="text-sm font-semibold uppercase tracking-[0.24em] text-slate-400">Report History</h2>
               <p class="mt-1 text-sm text-slate-500">Saved markdown and JSON reports for this profile.</p>
             </div>
@@ -552,6 +567,81 @@
         </section>`;
     }
 
+    function buildLatestCandidatesMarkup(payload) {
+      const candidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
+      const syntheses = Array.isArray(payload?.signal_syntheses) ? payload.signal_syntheses : [];
+      const proposalActions = Array.isArray(payload?.proposal?.proposed_actions) ? payload.proposal.proposed_actions : [];
+      const decisions = Array.isArray(payload?.portfolio_decisions) ? payload.portfolio_decisions : [];
+      const synthesisByTicker = Object.fromEntries(syntheses.map((item) => [item.ticker, item]));
+      const actionByTicker = Object.fromEntries(proposalActions.map((item) => [item.ticker, item]));
+      const decisionByTicker = Object.fromEntries(decisions.map((item) => [item.ticker, item]));
+
+      if (!candidates.length) {
+        return `
+          <div class="fade-in">
+            <div class="text-sm text-slate-300">No canonical candidates were produced for this profile.</div>
+          </div>`;
+      }
+
+      const cards = candidates.map((candidate) => {
+        const action = actionByTicker[candidate.ticker] || {};
+        const decision = decisionByTicker[candidate.ticker] || {};
+        const synthesis = synthesisByTicker[candidate.ticker] || {};
+        const validity = action.proposal_validity || {};
+        const entryRange = action.execution_plan?.entry_range;
+        const entryRangeText = entryRange
+          ? (entryRange.lower_bound !== undefined && entryRange.upper_bound !== undefined
+            ? `${entryRange.lower_bound}-${entryRange.upper_bound}`
+            : (entryRange.reference || "n/a"))
+          : "n/a";
+        const strategySignals = Array.isArray(candidate.strategy_signals) ? candidate.strategy_signals : [];
+
+        return `
+          <article class="rounded-2xl border border-white/10 bg-slate-950/40 p-5">
+            <div class="flex flex-wrap items-center gap-2">
+              <div class="text-lg font-semibold text-slate-100">${escapeHtml(candidate.ticker)}</div>
+              ${renderInfoPill(action.action || "candidate", action.conviction || candidate.agreement_level || "", String(action.action || "default").toLowerCase())}
+              ${renderInfoPill("Rank", candidate.preliminary_rank ? String(candidate.preliminary_rank) : "n/a")}
+            </div>
+            <div class="mt-3 grid gap-3 sm:grid-cols-3">
+              <div class="rounded-xl border border-white/10 bg-slate-900/40 p-4">
+                <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Aggregate</div>
+                <div class="mt-2 text-lg font-semibold text-slate-100">${Math.round(Number(candidate.aggregate_score || 0) * 100)}</div>
+                <div class="mt-1 text-xs text-slate-500">confidence ${Number(candidate.aggregate_confidence || 0).toFixed(2)}</div>
+              </div>
+              <div class="rounded-xl border border-white/10 bg-slate-900/40 p-4">
+                <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Target Weight</div>
+                <div class="mt-2 text-lg font-semibold text-slate-100">${decision.target_weight !== undefined ? `${(Number(decision.target_weight) * 100).toFixed(2)}%` : "n/a"}</div>
+                <div class="mt-1 text-xs text-slate-500">${escapeHtml(validity.status || "n/a")}</div>
+              </div>
+              <div class="rounded-xl border border-white/10 bg-slate-900/40 p-4">
+                <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Entry Range</div>
+                <div class="mt-2 text-lg font-semibold text-slate-100">${escapeHtml(entryRangeText)}</div>
+                <div class="mt-1 text-xs text-slate-500">${escapeHtml(action.execution_plan?.valid_until || "n/a")}</div>
+              </div>
+            </div>
+            <div class="mt-4 text-sm leading-relaxed text-slate-300">${escapeHtml(synthesis.summary || action.reason || "No synthesis available.")}</div>
+            <div class="mt-4 flex flex-wrap gap-2">
+              ${strategySignals.map((signal) => renderInfoPill(signal.strategy_id, `${Math.round(Number(signal.score_normalized || 0) * 100)}`, "default")).join("")}
+            </div>
+          </article>`;
+      }).join("");
+
+      return `
+        <div class="fade-in space-y-4">
+          <div class="flex flex-wrap items-center gap-2">
+            ${renderInfoPill("Profile", payload.profile_id || getProfileId())}
+            ${renderInfoPill("Generated", payload.generated_at || "")}
+          </div>
+          <div class="space-y-4">${cards}</div>
+        </div>`;
+    }
+
+    function renderLatestCandidates(payload) {
+      const container = document.getElementById("latest-candidates-box");
+      container.innerHTML = buildLatestCandidatesMarkup(payload);
+    }
+
     function renderStructuredProfileReport(payload) {
       const box = document.getElementById("profile-report-box");
       const sections = payload.sections || {};
@@ -571,6 +661,36 @@
             ${renderInfoPill("Generated", payload.created_at || "")}
           </div>
           ${watchlist}
+          ${market}
+          ${featured}
+          ${commodity}
+        </div>`;
+    }
+
+    function renderCanonicalProfileReport(candidatesPayload, reportPayload) {
+      const box = document.getElementById("profile-report-box");
+      const sections = reportPayload?.sections || {};
+      const market = sections.market_overview_structured ? renderStructuredMarket(sections.market_overview_structured) : "";
+      const featured = sections.featured_idea_structured ? renderStructuredFeatured(sections.featured_idea_structured) : "";
+      const commodity = sections.commodity_summary ? `
+        <section class="rounded-2xl border border-white/10 bg-slate-950/40 p-5">
+          <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Commodity Summary</div>
+          <div class="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-slate-300">${escapeHtml(sections.commodity_summary)}</div>
+        </section>` : "";
+
+      box.innerHTML = `
+        <div class="fade-in space-y-6">
+          <div class="flex flex-wrap items-center gap-2">
+            ${renderInfoPill("Report", reportPayload?.report_id || "latest")}
+            ${renderInfoPill("Generated", reportPayload?.created_at || candidatesPayload?.generated_at || "")}
+          </div>
+          <section>
+            <div class="mb-4">
+              <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Canonical Watchlist View</div>
+              <div class="mt-1 text-sm text-slate-400">Candidates, portfolio decisions, and proposal state from the live v2 pipeline.</div>
+            </div>
+            ${buildLatestCandidatesMarkup(candidatesPayload)}
+          </section>
           ${market}
           ${featured}
           ${commodity}
@@ -751,6 +871,7 @@
         setSelectedReportSections(prefs.report_sections || ["watchlist"]);
         showPrefsStatus(`Loaded settings for ${profileId}.`, "success");
         loadReportHistory();
+        loadLatestCandidates();
       } catch (e) {
         showPrefsStatus(e.message || "Failed to load settings.", "error");
       }
@@ -803,6 +924,7 @@
         setSelectedReportSections(data.report_sections || payload.report_sections);
         showPrefsStatus(`Saved settings for ${profileId}.`, "success");
         loadReportHistory();
+        loadLatestCandidates();
       } catch (e) {
         showPrefsStatus(e.message || "Failed to save settings.", "error");
       } finally {
@@ -817,15 +939,22 @@
       const box = document.getElementById("profile-report-box");
       button.disabled = true;
       button.textContent = "Generating...";
-      box.innerHTML = `<span class="text-slate-500">Building personalized report for ${escapeHtml(profileId)}...</span>`;
+      box.innerHTML = `<span class="text-slate-500">Building canonical profile view for ${escapeHtml(profileId)}...</span>`;
       try {
-        const res = await fetch(`/api/report/${encodeURIComponent(profileId)}/structured`);
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.detail || "Failed to generate report.");
+        const [candidatesRes, reportRes] = await Promise.all([
+          fetch(`/api/candidates/latest?profile_id=${encodeURIComponent(profileId)}`),
+          fetch(`/api/report/${encodeURIComponent(profileId)}/structured`),
+        ]);
+        const candidatesData = await candidatesRes.json();
+        const reportData = await reportRes.json();
+        if (!candidatesRes.ok) {
+          throw new Error(candidatesData.detail || "Failed to load canonical candidates.");
         }
-        renderStructuredProfileReport(data);
-        showPrefsStatus(`Generated personalized report for ${profileId}.`, "success");
+        if (!reportRes.ok) {
+          throw new Error(reportData.detail || "Failed to generate report.");
+        }
+        renderCanonicalProfileReport(candidatesData, reportData);
+        showPrefsStatus(`Generated canonical profile view for ${profileId}.`, "success");
         loadReportHistory();
       } catch (e) {
         box.innerHTML = `<span class="text-rose-400">${escapeHtml(e.message || "Failed to generate report.")}</span>`;
@@ -833,6 +962,28 @@
       } finally {
         button.disabled = false;
         button.textContent = "Generate My Report";
+      }
+    }
+
+    async function loadLatestCandidates() {
+      const profileId = getProfileId();
+      const button = document.getElementById("candidates-btn");
+      const box = document.getElementById("latest-candidates-box");
+      button.disabled = true;
+      button.textContent = "Loading...";
+      box.innerHTML = `<span class="text-slate-500">Loading canonical candidates for ${escapeHtml(profileId)}...</span>`;
+      try {
+        const res = await fetch(`/api/candidates/latest?profile_id=${encodeURIComponent(profileId)}`);
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || "Failed to load latest candidates.");
+        }
+        renderLatestCandidates(data);
+      } catch (e) {
+        box.innerHTML = `<span class="text-rose-400">${escapeHtml(e.message || "Failed to load latest candidates.")}</span>`;
+      } finally {
+        button.disabled = false;
+        button.textContent = "Refresh";
       }
     }
 

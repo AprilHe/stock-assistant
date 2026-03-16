@@ -1,0 +1,22 @@
+{
+  "BTC-USD": {
+    "fetched_at": "2026-03-16T12:10:07.540388+00:00",
+    "metadata": {
+      "asset_type": "stock",
+      "currency": "USD",
+      "exchange": "CCC",
+      "instrument_name": "Bitcoin USD"
+    }
+  },
+  "XOM": {
+    "fetched_at": "2026-03-16T12:19:29.892363+00:00",
+    "metadata": {
+      "asset_type": "stock",
+      "currency": "USD",
+      "exchange": "NYQ",
+      "industry": "Oil & Gas Integrated",
+      "instrument_name": "Exxon Mobil Corporation",
+      "sector": "Energy"
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "_comment": "Phase 4 calibration skeleton. Normalization profile breakpoints mirror the hardcoded NORMALIZATION_PROFILES in domain/schemas/signals.py. Update with backtest data when available.",
+  "_updated": "2026-03-16",
+  "conflict_penalty": 0.05,
+  "normalization_profiles": {
+    "breakout": {
+      "raw_floor": 42, "raw_neutral": 62, "raw_strong": 82, "raw_cap": 100,
+      "norm_floor": 0.40, "norm_neutral": 0.50, "norm_strong": 0.65, "norm_cap": 0.80
+    },
+    "pullback": {
+      "raw_floor": 47, "raw_neutral": 58, "raw_strong": 68, "raw_cap": 80,
+      "norm_floor": 0.40, "norm_neutral": 0.50, "norm_strong": 0.65, "norm_cap": 0.75
+    },
+    "trend_following": {
+      "raw_floor": 42, "raw_neutral": 60, "raw_strong": 72, "raw_cap": 88,
+      "norm_floor": 0.40, "norm_neutral": 0.50, "norm_strong": 0.65, "norm_cap": 0.80
+    },
+    "mean_reversion": {
+      "raw_floor": 42, "raw_neutral": 58, "raw_strong": 72, "raw_cap": 82,
+      "norm_floor": 0.38, "norm_neutral": 0.47, "norm_strong": 0.60, "norm_cap": 0.72
+    },
+    "donchian_breakout": {
+      "raw_floor": 48, "raw_neutral": 64, "raw_strong": 76, "raw_cap": 84,
+      "norm_floor": 0.40, "norm_neutral": 0.50, "norm_strong": 0.65, "norm_cap": 0.78
+    },
+    "commodity_macro": {
+      "raw_floor": 24, "raw_neutral": 56, "raw_strong": 76, "raw_cap": 96,
+      "norm_floor": 0.40, "norm_neutral": 0.50, "norm_strong": 0.65, "norm_cap": 0.80
+    }
+  }
+}

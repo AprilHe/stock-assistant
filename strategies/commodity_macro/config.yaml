@@ -21,3 +21,12 @@ prompt_hints:
   - Discuss both commodity-specific and macro drivers.
   - Explicitly note USD and rates impact when relevant.
 
+
+# v2 Section 4.1 — data window requirements
+data_windows:
+  signal_lookback_window: "12mo"
+  feature_windows:
+    - "20d"   # short trend (SMA20 / ret20)
+    - "50d"   # trend baseline (SMA50)
+    - "60d"   # medium-term momentum (ret60)
+  min_history_required: "90d"

@@ -1,0 +1,10 @@
+{
+  "_comment": "Phase 4 calibration skeleton. Initial values = equal weights (1.0). Replace with backtest-derived weights when available.",
+  "_updated": "2026-03-16",
+  "breakout": 1.0,
+  "pullback": 1.0,
+  "trend_following": 1.0,
+  "mean_reversion": 1.0,
+  "donchian_breakout": 1.0,
+  "commodity_macro": 1.0
+}
